@@ -269,6 +269,7 @@ struct Snake
 	Item railgun_item;
 
 	size_t length() const { return coord_list.size(); }
+	bool has_laser() const { return railgun_item.id >= 0; }
 
 	const Coord& operator[]( size_t idx ) const { return coord_list[idx]; }
 };
@@ -825,7 +826,7 @@ inline bool Context::round_preprocess()
 
 using OpHistory = std::vector<std::vector<Operation>>;
 
-Operation make_your_decision( const Snake& snake_to_operate, const Context& ctx, const OpHistory& op_history );
+Operation make_your_decision( const Snake& snake, const Context& ctx, const OpHistory& op_history );
 
 void game_over( int gameover_type, int winner, int p0_score, int p1_score );
 

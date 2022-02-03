@@ -1,0 +1,12 @@
+目前bug：
+	
+关注点：
+	
+增长点：
+	搜索类
+	圈地行为
+	堵蛇行为
+	融墙行为
+	（and more...）
+历史bug：
+	calc_snk_air取pos时取了this->pos

@@ -1,4 +1,6 @@
 #pragma once
+#ifndef _TAG_ADK_
+#define _TAG_ADK_
 
 #include <algorithm>
 #include <cstdio>
@@ -245,21 +247,33 @@ private:
 
 /*   Game Logic Begins   */
 
+// Game setting
+const static int GROWING_ROUNDS = 8;
+const static int ITEM_EXPIRE_LIMIT = 16;
+const static int SNAKE_LIMIT = 4;
+
 struct Item
 {
 	int x, y, id, time, type, param;
 	bool eaten, expired;
-};
 
-const Item NOT_A_ITEM { 0, 0, -1, 0, 0, 0, false, false };
+	const std::string to_string() const {
+		std::string st;
+		st.resize(50);
+		if(type == 0) std::sprintf(&st[0],"[(%3d->%3d)在(%2d,%2d)处的参数%d食物]",time,time+ITEM_EXPIRE_LIMIT,x,y,param);
+		else std::sprintf(&st[0],"[(%3d->%3d)在(%2d,%2d)处的激光]",time,time+ITEM_EXPIRE_LIMIT,x,y);
+		return st;
+	}
+};
+const Item NULL_ITEM { 0, 0, -1, 0, 0, 0, false, false };
+inline bool operator==(const Item &a, const Item &b) { return a.id == b.id; }
+inline bool operator!=(const Item &a, const Item &b) { return a.id != b.id; }
 
 struct Coord
 {
 	int x, y;
 };
-
 inline bool operator==( const Coord& lhs, const Coord& rhs ) { return ( lhs.x == rhs.x ) && ( lhs.y == rhs.y ); }
-
 inline bool operator!=( const Coord& lhs, const Coord& rhs ) { return !( lhs == rhs ); }
 
 struct Snake
@@ -296,11 +310,6 @@ public:                                               \
                                                       \
 private:                                              \
 	TYPE_NAME _##NAME
-
-// Game setting
-const static int GROWING_ROUNDS = 8;
-const static int ITEM_EXPIRE_LIMIT = 16;
-const static int SNAKE_LIMIT = 4;
 
 class Context
 {
@@ -365,7 +374,7 @@ inline Context::Context( int length, int width, int max_round, std::vector<Item>
 	  _item_list( item_list ), _snake_list_0 {}, _snake_list_1 {}, _tmp_list_0 {}, _tmp_list_1 {},
 	  _current_snake_id( 0 ), _next_snake_id( 2 ), _new_snakes {}, _remove_snakes {}
 {
-	Snake s = { { { 0, width - 1 } }, 0, 0, 0, NOT_A_ITEM };
+	Snake s = { { { 0, width - 1 } }, 0, 0, 0, NULL_ITEM };
 	_snake_list_0.push_back( s );
 	s.coord_list[0] = { length - 1, 0 };
 	s.id = s.camp = 1;
@@ -663,7 +672,7 @@ inline bool Context::fire_railgun()
 		cx += dx;
 		cy += dy;
 	}
-	snake.railgun_item = NOT_A_ITEM;
+	snake.railgun_item = NULL_ITEM;
 	return true;
 }
 
@@ -681,7 +690,7 @@ inline bool Context::split_snake()
 	std::vector<Coord> cl_tail { cl.begin() + mid, cl.end() };
 	std::reverse( cl_tail.begin(), cl_tail.end() );
 
-	Snake new_snake = { cl_tail, _next_snake_id++, snake.length_bank, snake.camp, NOT_A_ITEM };
+	Snake new_snake = { cl_tail, _next_snake_id++, snake.length_bank, snake.camp, NULL_ITEM };
 	snake.coord_list = cl_head;
 	snake.length_bank = 0;
 	auto& sl = my_snakes();
@@ -991,3 +1000,4 @@ inline void SnakeGoAI::handle_gameover()
 inline void SnakeGoAI::crash() { ::exit( -1 ); }
 
 /*   AI Controller Ends   */
+#endif

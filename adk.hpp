@@ -264,6 +264,7 @@ struct Item
 		else std::sprintf(&st[0],"[(%3d->%3d)在(%2d,%2d)处的激光]",time,time+ITEM_EXPIRE_LIMIT,x,y);
 		return st;
 	}
+	void print() const {printf("%s\n",to_string().c_str());}
 };
 const Item NULL_ITEM { 0, 0, -1, 0, 0, 0, false, false };
 inline bool operator==(const Item &a, const Item &b) { return a.id == b.id; }
@@ -286,10 +287,16 @@ struct Snake
 	bool has_laser() const { return railgun_item.id >= 0; }
 
 	const Coord& operator[]( size_t idx ) const { return coord_list[idx]; }
+	const std::string to_string() const {
+		std::string st;
+		st.resize(55);
+		std::sprintf(&st[0],"蛇头位于(%2d,%2d)的长%2d的蛇%2d",coord_list[0].x,coord_list[0].y,coord_list.size(),id);
+		return st;
+	}
+	void print() const {printf("%s\n",to_string().c_str());}
 };
-
+const Snake NULL_SNAKE {std::vector<Coord>(), -1, 0, 0, NULL_ITEM};
 inline bool operator==( const Snake& lhs, const Snake& rhs ) { return lhs.id == rhs.id; }
-
 inline bool operator!=( const Snake& lhs, const Snake& rhs ) { return lhs.id != rhs.id; }
 
 struct Operation
@@ -317,7 +324,9 @@ public:
 	friend class SnakeGoAI;
 
 	Context( int length, int width, int max_round, std::vector<Item>&& item_list );
+	Context(const Context& ctx);
 	bool do_operation( const Operation& op );
+	bool skip_operation();
 
 	const std::vector<Snake>& my_snakes() const;
 	std::vector<Snake>& my_snakes();
@@ -325,11 +334,13 @@ public:
 	std::vector<int>& tmp_my_snakes();
 	const std::vector<Snake>& opponents_snakes() const;
 	std::vector<Snake>& opponents_snakes();
+	bool inlist(int snkid) const;
 
 	const Item& find_item( int item_id ) const;
 	Item& find_item( int item_id );
 	const Snake& find_snake( int snake_id ) const;
 	Snake& find_snake( int snake_id );
+	int _current_snake_id, _next_snake_id;
 
 private:
 	PROPERTY( int, length );
@@ -348,7 +359,6 @@ private:
 	PROPERTY( std::vector<Snake>, snake_list_1 );
 	PROPERTY( std::vector<int>, tmp_list_0 );
 	PROPERTY( std::vector<int>, tmp_list_1 );
-	int _current_snake_id, _next_snake_id;
 	std::vector<int> _new_snakes;
 	std::vector<int> _remove_snakes;
 
@@ -366,13 +376,13 @@ private:
 	bool round_preprocess();
 };
 
-inline Context::Context( int length, int width, int max_round, std::vector<Item>&& item_list )
-	: _length( length ), _width( width ), _max_round( max_round ), _current_round( 0 ),
-	  _current_player( 1 ), _wall_map { static_cast<size_t>( length ), static_cast<size_t>( width ), -1 },
-	  _snake_map { static_cast<size_t>( length ), static_cast<size_t>( width ), -1 },
-	  _item_map { static_cast<size_t>( length ), static_cast<size_t>( width ), -1 },
-	  _item_list( item_list ), _snake_list_0 {}, _snake_list_1 {}, _tmp_list_0 {}, _tmp_list_1 {},
-	  _current_snake_id( 0 ), _next_snake_id( 2 ), _new_snakes {}, _remove_snakes {}
+inline Context::Context( int length, int width, int max_round, std::vector<Item>&& item_list ): 
+_length( length ), _width( width ), _max_round( max_round ), _current_round( 0 ),
+_current_player( 1 ), _wall_map { static_cast<size_t>( length ), static_cast<size_t>( width ), -1 },
+_snake_map { static_cast<size_t>( length ), static_cast<size_t>( width ), -1 },
+_item_map { static_cast<size_t>( length ), static_cast<size_t>( width ), -1 },
+_item_list( item_list ), _snake_list_0 {}, _snake_list_1 {}, _tmp_list_0 {}, _tmp_list_1 {},
+_current_snake_id( 0 ), _next_snake_id( 2 ), _new_snakes {}, _remove_snakes {}
 {
 	Snake s = { { { 0, width - 1 } }, 0, 0, 0, NULL_ITEM };
 	_snake_list_0.push_back( s );
@@ -385,33 +395,34 @@ inline Context::Context( int length, int width, int max_round, std::vector<Item>
 
 	round_preprocess();
 }
-inline const std::vector<Snake>& Context::my_snakes() const
+Context::Context(const Context& ctx) :
+_length(ctx._length), _width(ctx._width), _max_round(ctx._max_round), _current_round(ctx._current_round), _current_player(ctx._current_player),
+_wall_map(ctx._wall_map), _snake_map(ctx._snake_map), _item_map(ctx._item_map),
+_item_list(ctx._item_list), _snake_list_0(ctx._snake_list_0), _snake_list_1(ctx._snake_list_1),
+_tmp_list_0(ctx._tmp_list_0), _tmp_list_1(ctx._tmp_list_1),
+_current_snake_id(ctx._current_snake_id), _next_snake_id(ctx._next_snake_id), _new_snakes(ctx._new_snakes), _remove_snakes(ctx._remove_snakes)
 {
-	return _current_player == 0 ? _snake_list_0 : _snake_list_1;
+	// std::printf("copy called! with leng%d->%d\n",ctx._snake_list_0.size(),this->_snake_list_0.size());
 }
 
+inline const std::vector<Snake>& Context::my_snakes() const { return _current_player == 0 ? _snake_list_0 : _snake_list_1; }
 inline std::vector<Snake>& Context::my_snakes() { return _current_player == 0 ? _snake_list_0 : _snake_list_1; }
-
-inline const std::vector<int>& Context::tmp_my_snakes() const
-{
-	return _current_player == 0 ? _tmp_list_0 : _tmp_list_1;
-}
-
+inline const std::vector<int>& Context::tmp_my_snakes() const { return _current_player == 0 ? _tmp_list_0 : _tmp_list_1; }
 inline std::vector<int>& Context::tmp_my_snakes() { return _current_player == 0 ? _tmp_list_0 : _tmp_list_1; }
-
-inline const std::vector<Snake>& Context::opponents_snakes() const
-{
-	return _current_player == 0 ? _snake_list_1 : _snake_list_0;
-}
-
+inline const std::vector<Snake>& Context::opponents_snakes() const { return _current_player == 0 ? _snake_list_1 : _snake_list_0; }
 inline std::vector<Snake>& Context::opponents_snakes() { return _current_player == 0 ? _snake_list_1 : _snake_list_0; }
-
 inline const Item& Context::find_item( int item_id ) const { return _item_list[item_id]; }
-
 inline Item& Context::find_item( int item_id ) { return _item_list[item_id]; }
-
-inline const Snake& Context::find_snake( int snake_id ) const
-{
+inline const Snake& Context::find_snake( int snake_id ) const {
+	auto snake = std::find_if( std::begin( _snake_list_0 ), std::end( _snake_list_0 ),
+							   [=]( const Snake& other ) { return other.id == snake_id; } );
+	if (snake != std::end(_snake_list_0)) return *snake;
+	snake = std::find_if( std::begin( _snake_list_1 ), std::end( _snake_list_1 ),
+						  [=]( const Snake& other ) { return other.id == snake_id; } );
+	if (snake != std::end(_snake_list_1)) return *snake;
+	return NULL_SNAKE;
+}
+inline Snake& Context::find_snake( int snake_id ) {//万一找不到会返回什么呢？
 	auto snake = std::find_if( std::begin( _snake_list_0 ), std::end( _snake_list_0 ),
 							   [=]( const Snake& other ) { return other.id == snake_id; } );
 	if ( snake != std::end( _snake_list_0 ) )
@@ -419,39 +430,24 @@ inline const Snake& Context::find_snake( int snake_id ) const
 	return *std::find_if( std::begin( _snake_list_1 ), std::end( _snake_list_1 ),
 						  [=]( const Snake& other ) { return other.id == snake_id; } );
 }
-
-inline Snake& Context::find_snake( int snake_id )
-{
-	auto snake = std::find_if( std::begin( _snake_list_0 ), std::end( _snake_list_0 ),
-							   [=]( const Snake& other ) { return other.id == snake_id; } );
-	if ( snake != std::end( _snake_list_0 ) )
-		return *snake;
-	return *std::find_if( std::begin( _snake_list_1 ), std::end( _snake_list_1 ),
-						  [=]( const Snake& other ) { return other.id == snake_id; } );
+bool Context::inlist(int snkid) const {
+	for(int i = 0; i < this->_snake_list_0.size(); i++) if(snkid == this->_snake_list_0[i].id) return true;
+	for(int i = 0; i < this->_snake_list_1.size(); i++) if(snkid == this->_snake_list_1[i].id) return true;
+	return false;
 }
 
-inline bool Context::do_operation( const Operation& op )
-{
-	if ( op.type == 5 )
-	{
-		if ( !fire_railgun() )
-			return false;
-	}
-	else if ( op.type == 6 )
-	{
-		if ( !split_snake() )
-			return false;
-	}
-	else if ( op.type >= 1 && op.type <= 4 )
-	{
-		if ( !move_snake( op ) )
-			return false;
-	}
-	else
-	{
-		return false;
-	}
+inline bool Context::do_operation( const Operation& op ) {
+	if ( op.type == 5 ) {
+		if (!fire_railgun()) return false;
+	} else if ( op.type == 6 ) {
+		if (!split_snake()) return false;
+	} else if ( op.type >= 1 && op.type <= 4 ) {
+		if (!move_snake(op)) return false;
+	} else return false;
 
+	return !find_next_snake() || round_preprocess();
+}
+bool Context::skip_operation() {
 	return !find_next_snake() || round_preprocess();
 }
 
@@ -675,7 +671,6 @@ inline bool Context::fire_railgun()
 	snake.railgun_item = NULL_ITEM;
 	return true;
 }
-
 inline bool Context::split_snake()
 {
 	if ( my_snakes().size() == SNAKE_LIMIT )
@@ -693,11 +688,10 @@ inline bool Context::split_snake()
 	Snake new_snake = { cl_tail, _next_snake_id++, snake.length_bank, snake.camp, NULL_ITEM };
 	snake.coord_list = cl_head;
 	snake.length_bank = 0;
-	auto& sl = my_snakes();
-	my_snakes().insert(
-		std::find_if( std::begin( sl ), std::end( sl ), [&]( const Snake& s ) { return s.id == _current_snake_id; } ) +
-			1,
-		new_snake );
+	std::vector<Snake>& sl = my_snakes();
+	// printf("splitting! my_snakes: %d addr:%d\n",sl.size(),&sl);
+	// for(auto it = sl.begin(); it != sl.end(); it++) it->print();
+	my_snakes().insert(std::find_if(std::begin(sl),std::end(sl),[&](const Snake& s) {return s.id == _current_snake_id;})+1,new_snake);
 	_new_snakes.push_back( new_snake.id );
 	for ( auto c : cl_tail )
 	{

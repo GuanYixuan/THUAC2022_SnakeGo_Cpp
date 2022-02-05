@@ -5,8 +5,8 @@
 #include "adk.hpp"
 using namespace std;
 
-//logger类
-const bool LOG_SWITCH = false;
+//Logger类
+const bool LOG_SWITCH = true;
 const int LOG_LEVEL = 0;
 class Logger {
 	public:
@@ -40,7 +40,7 @@ void Logger::flush() {
 	if(LOG_SWITCH) fflush(this->file);
 }
 
-//ai类
+//Ai类
 const int ITEM_ALLOC_MAX = 512;
 struct tgt_alloc_t {
 	int snkid;
@@ -87,27 +87,34 @@ class AI {
 		constexpr static double ALLOC_LASER_AS_APPLE = 1;
 		constexpr static double ALLOC_HAS_LASER_PENA = 7;
 		constexpr static double ALLOC_MAX_COST_BOUND = 17;
+
+		static double val_func0(const Context& ctx);
 };
 
 
-//assess类
+//Assess类
 #define MAP_LENGTH 16
 typedef pair<int,int> pii;
 typedef int map_int_t[MAP_LENGTH][MAP_LENGTH];
 const int ACT_LEN = 4;
 const int ACT[4][2] = {{1,0},{0,1},{-1,0},{0,-1}};
+const int ACT_MAXV = 6;
 
 struct act_score_t {
 	int actid;
 	double val;
+
+	bool operator==(const act_score_t &b) const {return actid == b.actid && val == b.val;}
+	bool operator!=(const act_score_t &b) const {return !((*this) == b);}
 };
+const act_score_t ACT_SCORE_NULL = act_score_t({-100,-1});
 bool act_score_cmp(const act_score_t &a, const act_score_t &b);
 struct spd_map_t {
 	int dist;
 	int snkid;
 
-	bool operator==(const spd_map_t &b) {return dist == b.dist && snkid == b.snkid;}
-	bool operator!=(const spd_map_t &b) {return !((*this) == b);}
+	bool operator==(const spd_map_t &b) const {return dist == b.dist && snkid == b.snkid;}
+	bool operator!=(const spd_map_t &b) const {return !((*this) == b);}
 };
 const spd_map_t SPD_MAP_NULL = spd_map_t({-1,-1});
 struct find_path_q_t {
@@ -219,8 +226,6 @@ class Assess {
 		const int camp;
 		const int turn;
 
-		
-
 		//find_path系列常数
 		const static int BANK_SIZ_LIST_SIZE = 100;
 		//scan_act系列常数
@@ -242,6 +247,115 @@ class Assess {
 		constexpr static double EM_RAY_COST[2] = {2,1.0/3};
 		constexpr static double EM_SOLID_EFF = 0.75;
 };
+
+//Search类
+const int SNK_SIMU_TYPE_MAX = 128;
+class Search {
+	public:
+		Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid);
+
+		void setup_search(int max_turn, double (*value_func)(const Context& ctx));
+		//发起局部搜索
+		//返回的act_score_t中的actid【不是ACT的下标】
+		act_score_t search();
+		
+
+	private:
+		Logger& logger;
+		Context ctx0;
+		const int camp;
+		const int snkid;
+		int max_turn, end_turn;
+		int paused_snake_cnt[2];
+		bool snk_simu_type[SNK_SIMU_TYPE_MAX];
+		double (*value_func)(const Context& ctx);
+
+		vector<Context> dfs_stack;
+		//局部搜索，采用模拟递归的方式进行，返回(走法,最大val)
+		act_score_t search_dfs(int stack_ind);
+		act_score_t search_comp(const act_score_t &a, const act_score_t &b, bool max_layer);
+
+		int debug_search_cnt = 0;
+};
+Search::Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid) :
+ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid)
+{
+	for(int i = 0; i < SNK_SIMU_TYPE_MAX; i++) snk_simu_type[i] = true;//所有id都在模拟范围内（包括未来的id）
+	
+	vector<int> remove_list;
+	for(auto it = this->ctx0.my_snakes().begin(); it != this->ctx0.my_snakes().end(); it++) remove_list.push_back(it->id);
+	for(auto it = this->ctx0.opponents_snakes().begin(); it != this->ctx0.opponents_snakes().end(); it++) remove_list.push_back(it->id);
+	for(int i = remove_list.size()-1; i >= 0; i--) {
+		for(int j = 0; j < snklst.size(); j++) {
+			if(snklst[j] == remove_list[i]) {
+				remove_list.pop_back();
+				break;
+			}
+		}
+	}
+	paused_snake_cnt[0] = paused_snake_cnt[1] = 0;
+	for(int i = 0; i < remove_list.size(); i++) {
+		snk_simu_type[remove_list[i]] = false;//排除remove_list中的id
+		paused_snake_cnt[this->ctx0.find_snake(remove_list[i]).camp]++;
+	}
+}
+void Search::setup_search(int max_turn, double (*value_func)(const Context& ctx)) {
+	this->max_turn = max_turn;
+	this->value_func = value_func;
+	this->end_turn = this->ctx0.current_round() + this->max_turn;
+	printf("setup: max_turn:%d end_turn:%d\n",this->max_turn,this->end_turn);
+}
+act_score_t Search::search() {
+	this->debug_search_cnt = 0;
+	this->dfs_stack.push_back(ctx0);
+	act_score_t ans = this->search_dfs(0);
+	printf("searched:%d\n",this->debug_search_cnt);
+	return ans;
+}
+act_score_t Search::search_dfs(int stack_ind) {
+	act_score_t ans = ACT_SCORE_NULL;
+	const Context& now = this->dfs_stack[stack_ind];
+	const bool max_layer = (now.current_player() == this->camp);
+	// printf("dfs%5d dep:%d snkid:%d\n",this->debug_search_cnt,stack_ind,now._current_snake_id);
+	// this->logger.log(0,"dfs%5d dep:%d snkid:%d",this->debug_search_cnt,stack_ind,now._current_snake_id);
+
+	assert(now.current_round() <= this->end_turn);
+	for(int i = 1; i <= ACT_MAXV; i++) {
+		if(this->dfs_stack.size() == stack_ind+1) this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
+		else {
+			while(this->dfs_stack.size() > stack_ind+1) this->dfs_stack.pop_back();
+			this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
+		}
+		
+		if(this->dfs_stack[stack_ind+1].do_operation(Operation({i}))) {
+			// this->logger.log(0,"dfs%5d turn:%d dep:%d snkid:%d op:%d my_size:%d reg_siz%d\n",this->debug_search_cnt,now.current_round(),stack_ind,this->dfs_stack[stack_ind+1]._current_snake_id,i,this->dfs_stack[stack_ind+1].snake_list_0().size(),this->dfs_stack[stack_ind].snake_list_0().size());
+			this->debug_search_cnt++;
+			bool end = false;
+			const Context& next = this->dfs_stack[stack_ind+1];
+			if(now.current_round() == this->end_turn && now._current_snake_id == this->snkid) end = true;//到时间结束
+			if(!next.inlist(this->snkid)) end = true;//蛇死
+			if(end) {//不再扩展
+				ans = this->search_comp(ans,act_score_t({i,(*this->value_func)(next)}),max_layer);
+				continue;
+			}
+			
+			ans = this->search_comp(ans,act_score_t({i,this->search_dfs(stack_ind+1).val}),max_layer);
+		}
+	}
+	return ans;
+}
+act_score_t Search::search_comp(const act_score_t &a, const act_score_t &b, bool max_layer) {//【不要全局域啊！】
+	if(a == ACT_SCORE_NULL) return b;
+	if(b == ACT_SCORE_NULL) return a;
+	if(max_layer) {
+		if(a.val >= b.val) return a;
+		else return b;
+	} else {
+		if(a.val <= b.val) return a;
+		else return b;
+	}
+}
+
 
 //Ai类
 bool tgt_alloc_cmp(const tgt_alloc_t &a, const tgt_alloc_t &b) {
@@ -281,6 +395,10 @@ void AI::turn_control() {
 	this->assess->do_turn_assess();
 
 	this->distribute_tgt();
+
+	Search sr((*this->ctx),this->logger,vector<int>({0,1}),this->snake->id);
+	sr.setup_search(3,this->val_func0);
+	act_score_t res = sr.search();
 }
 void AI::distribute_tgt() {
 	this->wanted_item.clear();
@@ -347,6 +465,9 @@ int AI::try_eat() {
 	}
 	const Item &item = this->wanted_item[this->snake->id];
 	return this->assess->find_path(Coord({item.x,item.y}));
+}
+double AI::val_func0(const Context& ctx) {
+	return -100;
 }
 
 //Assess类
@@ -842,24 +963,20 @@ pii Assess::ray_trace_dir(const Coord &pos, const Coord &dire) {
 	return pii({fr,en});
 }
 
+//Search类
+
 Logger logger = Logger();
 AI ai = AI(logger);
 
-Operation make_your_decision( const Snake &snake, const Context &ctx, const OpHistory& op_history)
-{
+Operation make_your_decision( const Snake &snake, const Context &ctx, const OpHistory& op_history) {
 	const int op = ai.judge(snake,ctx);
 	ai.logger.flush();
 	return Operation({op});
 }
-void game_over( int gameover_type, int winner, int p0_score, int p1_score )
-{
+void game_over( int gameover_type, int winner, int p0_score, int p1_score ) {
 	fprintf( stderr, "%d %d %d %d", gameover_type, winner, p0_score, p1_score );
 }
-int main( int argc, char *argv[] )
-{
-	// for(int i = 0;i < argc; i++) {
-	// 	cout << "argv[" << i << "] is " << argv[i] <<endl;
-	// }
-	argc = min(3,argc);
+int main( int argc, char *argv[] ) {
+	argc = min(3,argc);//【危】
 	SnakeGoAI start( argc, argv );
 }

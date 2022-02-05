@@ -10,3 +10,16 @@
 	（and more...）
 历史bug：
 	calc_snk_air取pos时取了this->pos
+	
+
+adk维护过程
+	make_your_decision
+	append_op
+	do_operation
+		fire/split/move
+		find_next_snake
+		round_preprocess
+	handle_gameover/crash/下一个玩家
+	
+	append_op
+	do_operation

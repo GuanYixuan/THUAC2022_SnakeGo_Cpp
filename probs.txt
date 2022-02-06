@@ -4,14 +4,19 @@
 	
 增长点：
 	圈地行为
-	堵蛇行为
+	堵蛇行为（两格小蛇）
 	融墙行为
 	用局部搜索计算的礼让/安全分数
 	多点任务，不要太无聊
+	基于搜索的多蛇配合
+	基于搜索的单蛇行为
+	
 	
 历史bug：
 	calc_snk_air取pos时取了this->pos
-	
+	Search中push和pop的下标不同于设想的
+？？？：
+	把握全局
 
 adk维护过程
 	make_your_decision
@@ -24,3 +29,7 @@ adk维护过程
 	
 	append_op
 	do_operation
+	
+
+cd "D:\Special Project\Snake\ai\ai_cpp\build"
+main.exe 127.0.0.1 54321

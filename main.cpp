@@ -6,7 +6,8 @@
 using namespace std;
 
 //Logger类
-const bool LOG_SWITCH = false;
+const bool LOG_SWITCH = true;
+const bool LOG_STDOUT = true;
 const int LOG_LEVEL = 0;
 class Logger {
 	public:
@@ -21,7 +22,10 @@ class Logger {
 		std::FILE* file;
 };
 Logger::Logger() {
-	if(LOG_SWITCH) file = fopen("log.log","a");
+	if(LOG_SWITCH) {
+		if(LOG_STDOUT) file = stdout;
+		else file = fopen("log.log","a");
+	}
 }
 void Logger::config(int turn, int snkid) {
 	this->turn = turn;
@@ -136,6 +140,10 @@ struct scan_act_q_t {
 class Assess {
 	public:
 		Assess(AI &ai, const Context &ctx, Logger &logger, int snkid);
+
+		//测试区
+		void scan_act_search();
+		static double safe_val_func(const Context& begin, const Context& end, int snkid);
 
 		spd_map_t friend_spd[MAP_LENGTH][MAP_LENGTH];
 		spd_map_t enemy_spd[MAP_LENGTH][MAP_LENGTH];
@@ -266,7 +274,10 @@ class Search {
 	public:
 		Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid);
 
-		void setup_search(int max_turn, double (*value_func)(const Context& ctx));
+		//dep=0的搜索返回的各动作的val【ACT的下标】
+		act_score_t search_vals[ACT_MAXV];
+
+		void setup_search(int max_turn, double (*value_func)(const Context& begin, const Context& end, int snkid), int act_maxv = 4);
 		//发起局部搜索
 		//返回的act_score_t中的actid【不是ACT的下标】
 		act_score_t search();
@@ -277,9 +288,10 @@ class Search {
 		Context ctx0;
 		const int camp;
 		const int snkid;
+		int act_maxv;
 		int max_turn, end_turn;
 		bool snk_simu_type[SNK_SIMU_TYPE_MAX];
-		double (*value_func)(const Context& ctx);
+		double (*value_func)(const Context& begin, const Context& end, int snkid);
 
 		vector<Context> dfs_stack;
 		//局部搜索，采用模拟递归的方式进行，返回(走法,最大val)
@@ -306,8 +318,15 @@ ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid)
 		}
 		if(!keep) snk_simu_type[*it] = false;//,printf("remove:%d\n",*it);//排除id
 	}
+	//帮ctx0跳
+	while(!this->snk_simu_type[this->ctx0._current_snake_id]) this->ctx0.skip_operation();
+	//初始化search_vals
+	const bool max_layer = (this->ctx0.find_snake(this->ctx0._current_snake_id).camp == camp);
+	for(int i = 0; i < ACT_MAXV; i++) this->search_vals[i] = act_score_t({i,-1000});
+	if(!max_layer) for(int i = 0; i < ACT_MAXV; i++) this->search_vals[i].val *= -1;
 }
-void Search::setup_search(int max_turn, double (*value_func)(const Context& ctx)) {
+void Search::setup_search(int max_turn, double (*value_func)(const Context& begin, const Context& end, int snkid), int act_maxv) {
+	this->act_maxv = act_maxv;
 	this->max_turn = max_turn;
 	this->value_func = value_func;
 	this->end_turn = min(this->ctx0.current_round() + this->max_turn,this->ctx0.max_round());//【最后一回合可能搜不完全】
@@ -320,40 +339,53 @@ act_score_t Search::search() {
 	if(this->ctx0.current_round() > this->ctx0.max_round()) return ACT_SCORE_NULL;
 
 	act_score_t ans = this->search_dfs(0);
-	printf("searched:%d\n",this->debug_search_cnt);
+	this->logger.log(0,"searched:%d\n",this->debug_search_cnt);
 	return ans;
 }
 act_score_t Search::search_dfs(int stack_ind) {
 	act_score_t ans = ACT_SCORE_NULL;
-	const Context& now = this->dfs_stack[stack_ind];
-	const bool max_layer = (now.current_player() == this->camp);
-	// printf("dfs%5d dep:%d snkid:%d\n",this->debug_search_cnt,stack_ind,now._current_snake_id);
-	this->logger.log(0,"dfs%5d dep:%d snkid:%d",this->debug_search_cnt,stack_ind,now._current_snake_id);
+	const bool max_layer = (this->dfs_stack[stack_ind].current_player() == this->camp);
+	// printf("outer: dfs%5d turn:%d dep:%d snkid:%d\n",this->debug_search_cnt,this->dfs_stack[stack_ind].current_round(),stack_ind,this->dfs_stack[stack_ind]._current_snake_id);
+	// if(this->debug_search_cnt % 5 == 0) this->logger.log(0,"dfs%5d dep:%d snkid:%d",this->debug_search_cnt,stack_ind,this->dfs_stack[stack_ind]._current_snake_id);
 
-	assert(now.current_round() <= this->end_turn);
-	for(int i = 1; i <= ACT_MAXV; i++) {
-		if(this->dfs_stack.size() == stack_ind+1) this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
-		else {
-			while(this->dfs_stack.size() > stack_ind+1) this->dfs_stack.pop_back();
+	assert(this->dfs_stack[stack_ind].current_round() <= this->end_turn);
+	for(int i = 1; i <= this->act_maxv; i++) {
+		// printf("before copy:%d\n",this->dfs_stack[stack_ind].current_round());
+		if(this->dfs_stack.size() == stack_ind+1) {
+			// printf("push_back at [%d]\n",this->dfs_stack.size());
 			this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
 		}
+		else {
+			while(this->dfs_stack.size() > stack_ind+1) {
+				// printf("pop at [%d]\n",this->dfs_stack.size()-1);
+				this->dfs_stack.pop_back();
+			}
+			// printf("after_pop:%d\n",this->dfs_stack[stack_ind].current_round());
+			// printf("push_back at [%d], now addr:%d\n",this->dfs_stack.size(),&this->dfs_stack[stack_ind]);
+			this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
+			// printf("[%d] addr:%d val:%d\n",stack_ind,&this->dfs_stack[stack_ind],this->dfs_stack[stack_ind].current_round());
+			// printf("dfs_stack size:%d\n",dfs_stack.size());
+		}
 		
+		// printf("before turn:%d\n",this->dfs_stack[stack_ind].current_round());
 		if(this->dfs_stack[stack_ind+1].do_operation(Operation({i}))) {
-			// printf("dfs%5d turn:%d dep:%d snkid:%d op:%d my_size:%d reg_siz%d\n",this->debug_search_cnt,now.current_round(),stack_ind,this->dfs_stack[stack_ind+1]._current_snake_id,i,this->dfs_stack[stack_ind+1].snake_list_0().size(),this->dfs_stack[stack_ind].snake_list_0().size());
+			// printf("inner: dfs%5d turn:%d->%d dep:%d snkid:%d op:%d\n",this->debug_search_cnt,this->dfs_stack[stack_ind].current_round(),this->dfs_stack[stack_ind+1].current_round(),stack_ind,this->dfs_stack[stack_ind+1]._current_snake_id,i);
 			this->debug_search_cnt++;
 			bool end = false;
-			const Context& next = this->dfs_stack[stack_ind+1];
-			if(now.current_round() == this->end_turn && now._current_snake_id == this->snkid) end = true;//到时间结束
-			if(!next.inlist(this->snkid)) end = true;//蛇死
+			if(this->dfs_stack[stack_ind].current_round() == this->end_turn && this->dfs_stack[stack_ind]._current_snake_id == this->snkid) end = true;//到时间结束
+			if(!this->dfs_stack[stack_ind+1].inlist(this->snkid)) end = true;//蛇死
 			if(end) {//不再扩展
-				ans = this->search_comp(ans,act_score_t({i,(*this->value_func)(next)}),max_layer);
+				const double score = (*this->value_func)(this->ctx0,this->dfs_stack[stack_ind+1],this->snkid);
+				ans = this->search_comp(ans,act_score_t({i,score}),max_layer);
+				if(stack_ind == 0) this->search_vals[i-1].val = score;//可以直接赋值，因为更新机会只有这一个
 				continue;
 			}
 			
 			while(!this->snk_simu_type[this->dfs_stack[stack_ind+1]._current_snake_id]) this->dfs_stack[stack_ind+1].skip_operation();
-			// printf("skipped to:%d\n",this->dfs_stack[stack_ind+1]._current_snake_id);
 
-			ans = this->search_comp(ans,act_score_t({i,this->search_dfs(stack_ind+1).val}),max_layer);
+			const double score = this->search_dfs(stack_ind+1).val;
+			ans = this->search_comp(ans,act_score_t({i,score}),max_layer);
+			if(stack_ind == 0) this->search_vals[i-1].val = score;
 		}
 	}
 	return ans;
@@ -517,7 +549,7 @@ int AI::try_eat() {
 		this->logger.log(1,"未分配到目标");
 		return this->assess->random_step();
 	}
-	const Item &item = this->wanted_item[this->snake->id];
+	const Item &item = this->wanted_item[this->snake->id];//动态类型引用警告
 	return this->assess->find_path(Coord({item.x,item.y}));
 }
 double AI::val_func0(const Context& ctx) {
@@ -546,6 +578,7 @@ void Assess::do_turn_assess() {
 void Assess::do_snake_assess() {
 	this->refresh_all_bfs();
 	this->calc_mixed_score();
+	this->scan_act_search();
 }
 void Assess::calc_mixed_score() {
 	this->scan_act();
@@ -609,6 +642,36 @@ void Assess::calc_spd_map() {
 			else this->tot_spd[x][y] = this->enemy_spd[x][y];
 		}
 	}
+}
+void Assess::scan_act_search() {
+	vector<int> snk_list;
+	for(auto it = this->ctx.my_snakes().begin(); it != this->ctx.my_snakes().end(); it++) {
+		const int dst = (*this->dist_map[it->id])[this->pos.x][this->pos.y];
+		if(dst != -1 && dst <= 5) snk_list.push_back(it->id);//到自己的dst是0，所以没问题
+	}
+	for(auto it = this->ctx.opponents_snakes().begin(); it != this->ctx.opponents_snakes().end(); it++) {
+		const int dst = (*this->dist_map[it->id])[this->pos.x][this->pos.y];
+		if(dst != -1 && dst <= 5) snk_list.push_back(it->id);
+	}
+
+	this->logger.log(0,"搜索范围内有%d条蛇",snk_list.size());
+	Search search(this->ctx,this->logger,snk_list,this->snkid);
+	search.setup_search(3,this->safe_val_func,5);
+	search.search();
+
+	const act_score_t* ans = search.search_vals;
+	this->logger.log(0,"safe_val:[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]",ans[0].val,ans[1].val,ans[2].val,ans[3].val,ans[4].val,ans[5].val);
+}
+double Assess::safe_val_func(const Context& begin, const Context& end, int snkid) {
+	double ans = 0;
+
+	int leng_end = 0;
+	if(end.inlist(snkid)) leng_end = end.find_snake(snkid).length();
+	if(leng_end < begin.find_snake(snkid).length()) {
+		ans -= 10;
+		ans -= 1.0 * min(10ull,begin.find_snake(snkid).length()-leng_end);
+	}
+	return ans;
 }
 void Assess::scan_act() {
 	const double LOW_AIR_PARAM[4] = {10,2.5,-0.8,0.2};
@@ -857,7 +920,7 @@ int Assess::emergency_handle() {
 }
 void Assess::release_target(int snkid) {
 	if(snkid == -1) snkid = this->snkid;
-	const Item &tgt = this->ai.wanted_item[snkid];
+	const Item &tgt = this->ai.wanted_item[snkid];//引用元素
 	if(tgt != NULL_ITEM) {
 		this->logger.log(1,"释放原目标%s",tgt.to_string().c_str());
 		this->ai.item_alloc[tgt.id] = -1;
@@ -888,7 +951,7 @@ bool Assess::check_item_captured(const Item &item, int snkid) {
 
 	if(this->ctx.snake_map()[x][y] != snkid) return false;
 
-	const Snake &snk = this->ctx.find_snake(snkid);
+	const Snake &snk = this->ctx.find_snake(snkid);//引用警告
 	for(int i = 0; i < snk.length(); i++) {
 		if(snk[i] == crd) {
 			if(item.time - this->ctx.current_round() < snk.length()-i + snk.length_bank) return true;

@@ -1,7 +1,7 @@
 目前bug：
 	
 关注点：
-	
+	奇怪（过近）的dist_map值
 增长点：
 	圈地行为
 	堵蛇行为（两格小蛇）
@@ -15,6 +15,7 @@
 历史bug：
 	calc_snk_air取pos时取了this->pos
 	Search中push和pop的下标不同于设想的
+	不能随便引用vector中的元素
 ？？？：
 	把握全局
 
@@ -33,3 +34,7 @@ adk维护过程
 
 cd "D:\Special Project\Snake\ai\ai_cpp\build"
 main.exe 127.0.0.1 54321
+
+冰封之刃 v7 f9a899c23a7e4be9971351672a0229b0	0：40	ended	2:18
+Nauuo v150	4d0b559813514bf3863caea41c9babc5	34：6	ended	16:4
+ADK不用 v20	ac2a9b9fbbf44a739e2d0e49ff0a29b2	29：11	ended	17:5

@@ -274,6 +274,7 @@ struct Coord
 {
 	int x, y;
 };
+const Coord NULL_COORD {-1, -1};
 inline bool operator==( const Coord& lhs, const Coord& rhs ) { return ( lhs.x == rhs.x ) && ( lhs.y == rhs.y ); }
 inline bool operator!=( const Coord& lhs, const Coord& rhs ) { return !( lhs == rhs ); }
 
@@ -327,6 +328,10 @@ public:
 	Context(const Context& ctx);
 	bool do_operation( const Operation& op );
 	bool skip_operation();
+
+	//计算目前的蛇长，返回[0号玩家，1号玩家]
+	std::pair<int,int> calc_snake_leng() const;
+	std::pair<int,int> calc_wall() const;
 
 	const std::vector<Snake>& my_snakes() const;
 	std::vector<Snake>& my_snakes();
@@ -435,7 +440,30 @@ bool Context::inlist(int snkid) const {
 	for(int i = 0; i < this->_snake_list_1.size(); i++) if(snkid == this->_snake_list_1[i].id) return true;
 	return false;
 }
-
+std::pair<int,int> Context::calc_snake_leng() const {
+	std::pair<int,int> ans(0,0);
+	for(int x = 0; x < this->_length; x++) {
+		for(int y = 0; y < this->_width; y++) {
+			if(this->_snake_map[x][y] != -1) {
+				if(this->_snake_map[x][y] == 0) ans.first++;
+				else ans.second++;
+			}
+		}
+	}
+	return ans;
+}
+std::pair<int,int> Context::calc_wall() const {
+	std::pair<int,int> ans(0,0);
+	for(int x = 0; x < this->_length; x++) {
+		for(int y = 0; y < this->_width; y++) {
+			if(this->_wall_map[x][y] != -1) {
+				if(this->_wall_map[x][y] == 0) ans.first++;
+				else ans.second++;
+			}
+		}
+	}
+	return ans;
+}
 inline bool Context::do_operation( const Operation& op ) {
 	if ( op.type == 5 ) {
 		if (!fire_railgun()) return false;

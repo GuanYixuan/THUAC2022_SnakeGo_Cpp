@@ -273,6 +273,12 @@ inline bool operator!=(const Item &a, const Item &b) { return a.id != b.id; }
 struct Coord
 {
 	int x, y;
+	const std::string to_string() const {
+		std::string st;
+		st.resize(10);
+		std::sprintf(&st[0],"(%2d,%2d)",x,y);
+		return st;
+	}
 };
 const Coord NULL_COORD {-1, -1};
 inline bool operator==( const Coord& lhs, const Coord& rhs ) { return ( lhs.x == rhs.x ) && ( lhs.y == rhs.y ); }

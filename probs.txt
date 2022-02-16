@@ -13,7 +13,10 @@
 	
 	基于重要性的礼让分
 	
-	
+	总控：
+		需要分裂时小蛇主动撞死
+		多蛇合作进攻
+		
 历史bug：
 	calc_snk_air取pos时取了this->pos
 	Search中push和pop的下标不同于设想的

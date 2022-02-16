@@ -297,7 +297,7 @@ struct Snake
 	const std::string to_string() const {
 		std::string st;
 		st.resize(55);
-		std::sprintf(&st[0],"蛇头位于(%2d,%2d)的长%2d的蛇%2d",coord_list[0].x,coord_list[0].y,coord_list.size(),id);
+		std::sprintf(&st[0],"[蛇头位于(%2d,%2d)的长%2d的蛇%2d]",coord_list[0].x,coord_list[0].y,coord_list.size(),id);
 		return st;
 	}
 	void print() const {printf("%s\n",to_string().c_str());}

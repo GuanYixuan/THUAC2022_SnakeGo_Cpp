@@ -38,8 +38,16 @@ adk维护过程
 	
 
 cd "D:\Special Project\Snake\ai\ai_cpp\build"
+cd "D:\Special Project\Snake\ai\old_vers\Not Loaded"
 main.exe 127.0.0.1 54321
+cpp_22021401.exe 127.0.0.1 54321
 
+judger_cli --port 54321 --playerCount 2  --logicPath "D:\\Special Project\\Snake\\local-judger\\main.exe" --output "%s"
+
+第一轮
 冰封之刃 v7 f9a899c23a7e4be9971351672a0229b0	0：40	ended	2:18
 Nauuo v150	4d0b559813514bf3863caea41c9babc5	34：6	ended	16:4
 ADK不用 v20	ac2a9b9fbbf44a739e2d0e49ff0a29b2	29：11	ended	17:5
+
+第二轮
+冰封之刃 v7 f9a899c23a7e4be9971351672a0229b0	4：26

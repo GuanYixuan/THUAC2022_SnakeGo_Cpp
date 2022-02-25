@@ -6,7 +6,7 @@
 using namespace std;
 
 //Logger类
-const bool LOG_SWITCH = true;
+const bool LOG_SWITCH = false;
 const bool LOG_STDOUT = false;
 const int LOG_LEVEL = 0;
 class Logger {
@@ -46,7 +46,7 @@ void Logger::flush() {
 
 //Ai类
 const int ALLOC_MAX = 512;
-struct item_alloc_t {
+struct item_alloc_t {//物品目标分配结构体
 	int snkid;
 	double cost;
 	Item item;
@@ -58,30 +58,34 @@ struct snake_alloc_t {
 	Snake snake;
 };
 bool snake_alloc_cmp(const snake_alloc_t &a, const snake_alloc_t &b) { return a.cost < b.cost; }
+struct kl_alloc_t {//KL任务分配结构体
+	int tgt_id,killer_id;//必需参数
+	int type;//0=kill_1,1=kill_2,2=limit_1,3=limit_2
+	int status;//0=trying,1=ongoing
+	int waller_id,turner_id;//-1=不需要，-9=暂无
+	int wall_leng,turn_dis;
+};
+struct KL_target_addon {
+	int tgt_id,killer_id;//必需参数
+	int status;//0=trying,1=ongoing
+	int waller_id,turner_id;//-1=不需要，-9=暂无
+	inline bool isnull() const { return this->tgt_id == -1; }
+	// inline bool need_waller() const {}
+};
+const KL_target_addon NULL_KL_ADDON {-1,-1,-1,-1,-1};
 struct target {
-	int type;//-1=None,0=Item,1=Snake,2=Pos
-	Coord pos;
+	int type;//-1=None,0=Item,1=kill,2=limit
 	Item item;
-	Snake snake;
+	KL_target_addon KL_addon;
 
-	bool operator==(const target& other) const {
-		if(type != other.type) return false;
-		if(type == -1) return true;
-		if(type == 0) return item == other.item;
-		if(type == 1) return snake == other.snake;
-		if(type == 2) return pos == other.pos;
-		assert(false);
-	}
-	bool operator!=(const target& other) const { return *this == other; }
+	bool isnull() const { return this->type == -1; }
 	const std::string to_string() const {
 		if(type == -1) return std::string("None");
 		if(type == 0) return item.to_string();
-		if(type == 1) return snake.to_string();
-		if(type == 2) return pos.to_string();
 		assert(false);
 	}
 };
-const target NULL_TARGET {-1,NULL_COORD,NULL_ITEM,NULL_SNAKE};
+const target NULL_TARGET {-1,NULL_ITEM};
 class Assess;
 class AI {
 	public:
@@ -100,6 +104,10 @@ class AI {
 		void total_init();
 		void turn_control();
 
+		//找到可能的kl机会，并更新kl_list
+		void find_kl();
+		vector<kl_alloc_t> kl_list;
+
 		//[总控函数]为所有蛇分配目标
 		//目前食物目标每回合自动刷新，蛇目标保持锁定
 		void distribute_tgt();
@@ -107,7 +115,6 @@ class AI {
 		bool try_split();
 		bool try_shoot();
 		int try_eat();
-		int try_hit();
 		int try_solid();
 
 	private:
@@ -179,7 +186,9 @@ class Assess {
 		Assess(AI &ai, const Context &ctx, Logger &logger, int snkid);
 
 		//测试区
-		
+
+		//为主动贴靠3格内的蛇提供奖励
+		void calc_limit_score();
 		
 
 		spd_map_t friend_spd[MAP_LENGTH][MAP_LENGTH];
@@ -227,7 +236,7 @@ class Assess {
 		int check_item_captured_team(const Item &item);
 		//检查物品是否已经被snkid的蛇占住了（可以用身子直接吃掉）
 		bool check_item_captured(const Item &item, int snkid = -1);
-		//返回pos格是蛇上的第几格，需保证pos格有蛇
+		//返回pos格是蛇上的第几格，从尾部算起，需保证pos格有蛇
 		int get_pos_on_snake(const Coord &pos);
 		//计算当前位于pos的蛇头有几个方向可走，可添加一个额外堵塞位置extra_block及一个额外可行位置extra_go
 		//【这里默认extra_block是你的蛇头而extra_go是蛇尾】
@@ -238,7 +247,12 @@ class Assess {
 		//计算【当前蛇】立刻主动进行固化能包围的最大区域面积，包含圈住的对手墙面积，返回(最大面积,对应ACT下标)
         //如果无法进行固化，则返回(-1,-1)
 		pii get_enclosing_area();
-
+		//检查snkid在最近leng格内是否走直线
+		//对于leng>snkid.leng的情况，返回false
+		bool check_go_straight(int snkid = -1, int leng = 3);
+		//计算attacker走向target时的方向夹角
+		//不会考虑中间的障碍物
+		double get_encounter_angle(int attacker, int target);
 		//获取snkid到达(x,y)及其相邻格所需的最短时间
 		int get_adjcent_dis(int x, int y, int snkid = -1);
 		//推算snkid沿当前方向继续走dist格所到达的坐标
@@ -280,7 +294,6 @@ class Assess {
 	private:
 		AI &ai;
 		const Context &ctx;
-		//snakes : "list[Snake]"
 		const Snake &this_snake;
 		Logger &logger;
 		const static int x_leng = MAP_LENGTH;
@@ -484,15 +497,15 @@ int AI::judge(const Snake &snake, const Context &ctx) {
 	const int sol = this->try_solid();
 	if(sol != -1) return sol+1;
 
-	if(this->try_split()) {
-		this->logger.log(1,"主动分裂，长度%d",this->snake->length());
-		return 6;
-	}
-
 	if(this->target_list[this->snake->id].type == 0) return this->try_eat()+1;
-	if(this->target_list[this->snake->id].type == 1) return this->try_hit()+1;
 	if(this->target_list[this->snake->id].type == -1) {
 		this->logger.log(1,"未分配到目标");
+
+		if(this->try_split()) {
+			this->logger.log(1,"主动分裂，长度%d",this->snake->length());
+			return 6;
+		}
+
 		return this->assess->random_step() + 1;
 	}
 
@@ -504,17 +517,93 @@ void AI::total_init() {
 void AI::turn_control() {
 	this->assess->do_turn_assess();
 
+	// this->find_kl();
 	this->distribute_tgt();
+}
+void AI::find_kl() {
+	this->kl_list.clear();
+
+	for(const Snake& enemy : this->ctx->opponents_snakes()) {
+		if(enemy.length() < 4) continue;//从4格长开始
+		if(!this->assess->check_go_straight(enemy.id,3)) continue;//3格内走直线
+		// this->logger.log(0,"enemy初筛通过 %d",enemy.id);
+		
+		for(const Snake& ally : this->ctx->my_snakes()) {
+			const int dist = this->assess->get_adjcent_dis(enemy[0].x,enemy[0].y,ally.id);
+			if(dist > 3 || dist == -1) continue;//3格内贴头
+			
+			const double enc_angle = this->assess->get_encounter_angle(ally.id,enemy.id);
+			if(enc_angle > 145 || enc_angle < 85) continue;//接近角正确
+
+			this->logger.log(0,"初筛通过 %d->%d angle:%.1f",ally.id,enemy.id,enc_angle);
+
+			//至此已经确认可以try一次kill或limit了
+			//以下考察有没有静态的wall
+
+			int wall_leng = -1, turn_dist = 0;
+			const Coord&& tgt_dire = enemy[0]-enemy[1];
+			Coord check_pos = NULL_COORD;
+			if(tgt_dire.x == 0) {
+				if(abs(ally[0].x-(enemy[0].x+1)) > abs(ally[0].x-(enemy[0].x-1))) check_pos = Coord({enemy[0].x+1,enemy[0].y});
+				else check_pos = Coord({enemy[0].x-1,enemy[0].y});
+			} else {
+				if(abs(ally[0].y-(enemy[0].y+1)) > abs(ally[0].y-(enemy[0].y-1))) check_pos = Coord({enemy[0].x,enemy[0].y+1});
+				else check_pos = Coord({enemy[0].x,enemy[0].y-1});
+			}
+			check_pos = check_pos - tgt_dire;
+
+			while(true) {
+				wall_leng++;
+				check_pos = check_pos + tgt_dire;
+				if(check_pos.x < 0 || check_pos.y < 0 || check_pos.x >= this->ctx->length() || check_pos.y >= this->ctx->width()) break;
+				if(this->ctx->wall_map()[check_pos.x][check_pos.y] != -1) continue;
+				if(this->ctx->snake_map()[check_pos.x][check_pos.y] != -1) {
+					const int block_snk = this->ctx->snake_map()[check_pos.x][check_pos.y];
+					if(!this->assess->check_nstep_norm(check_pos.x,check_pos.y,wall_leng-1,enemy.id)) continue;
+					// if(this->assess->get_pos_on_snake(check_pos) - int(this->assess->check_first(block_snk,enemy.id)) + this->ctx->find_snake(block_snk).length_bank >= wall_leng) continue;
+				}
+				break;
+			}
+
+			//以下考察有没有现成的turn
+			Coord turn_pos = enemy[0];
+			while(true) {
+				turn_dist++;
+				turn_pos = turn_pos + tgt_dire;
+				if(turn_pos.x < 0 || turn_pos.y < 0 || turn_pos.x >= this->ctx->length() || turn_pos.y >= this->ctx->width()) break;
+				if(this->ctx->wall_map()[turn_pos.x][turn_pos.y] != -1) break;
+				if(this->ctx->snake_map()[turn_pos.x][turn_pos.y] != -1) {
+					const int block_snk = this->ctx->snake_map()[turn_pos.x][turn_pos.y];
+					if(!this->assess->check_nstep_norm(check_pos.x,check_pos.y,turn_dist-1,enemy.id)) continue;
+					// if(this->assess->get_pos_on_snake(turn_pos) - int(this->assess->check_first(block_snk,enemy.id)) + this->ctx->find_snake(block_snk).length_bank >= wall_leng) break;
+				}
+			}
+
+			if(wall_leng == 0) {//limit-2
+				kl_list.push_back(kl_alloc_t({enemy.id,ally.id,3,int(dist<=1),-9,-9,0,turn_dist}));
+				this->logger.log(0,"潜在limit-2 %d->%d sure:%d",ally.id,enemy.id,int(dist<=1));
+				continue;
+			}
+
+			if(turn_dist == -1 || turn_dist > wall_leng) {//无现成turn，limit-1
+				kl_list.push_back(kl_alloc_t({enemy.id,ally.id,2,int(dist<=1),-1,-9,wall_leng,turn_dist}));
+				this->logger.log(0,"潜在limit-1 %d->%d sure:%d",ally.id,enemy.id,int(dist<=1));
+				continue;
+			}
+
+			if(turn_dist <= wall_leng) {//kill-1
+				kl_list.push_back(kl_alloc_t({enemy.id,ally.id,0,int(dist<=1),-1,-1,wall_leng,turn_dist}));
+				this->logger.log(0,"潜在kill-1 %d->%d sure:%d wall:%d turn:%d",ally.id,enemy.id,int(dist<=1),wall_leng,turn_dist);
+				continue;
+			}
+		}
+	}
 }
 void AI::distribute_tgt() {
 	//清除食物类目标
 	for(int i = 0; i < ALLOC_MAX; i++) this->item_alloc[i] = -1;
 	for(auto it = this->ctx->my_snakes().begin(); it != this->ctx->my_snakes().end(); it++) if(this->target_list[it->id].type == 0) this->target_list[it->id] = NULL_TARGET;
-	// for(int i = 0; i < ALLOC_MAX; i++) this->item_alloc[i] = this->snake_alloc[i] = -1;
-	// for(auto it = this->ctx->my_snakes().begin(); it != this->ctx->my_snakes().end(); it++) this->target_list[it->id] = NULL_TARGET;
 
-	//如果目标死亡，清除snake类目标
-	for(auto it = this->ctx->my_snakes().begin(); it != this->ctx->my_snakes().end(); it++) if(this->target_list[it->id].type == 1 && !this->ctx->inlist(this->target_list[it->id].snake.id))  this->target_list[it->id] = NULL_TARGET;
 
 	//分配食物类目标，不影响snake类的目标
 	vector<item_alloc_t> item_list;
@@ -550,7 +639,7 @@ void AI::distribute_tgt() {
 
 		this->logger.log(1,"目标分配(item):蛇%2d -> %s 代价%.1f",it->snkid,it->item.to_string().c_str(),it->cost);
 		this->item_alloc[it->item.id] = it->snkid;
-		this->target_list[it->snkid] = target({0,NULL_COORD,it->item,NULL_SNAKE});
+		this->target_list[it->snkid] = target({0,it->item,NULL_KL_ADDON});
 	}
 
 	//分配打架目标
@@ -592,7 +681,7 @@ bool AI::try_split() {
 	if(this->snake->length() > 15 && this->ctx->my_snakes().size() < 4) return true;
 	if(this->snake->length() > 13 && this->ctx->my_snakes().size() < 3) return true;
 	if(this->snake->length() > 11 && this->ctx->my_snakes().size() < 2) return true;
-	if(this->target_list[this->snake->id] == NULL_TARGET) {
+	if(this->target_list[this->snake->id].isnull()) {
 		if(this->ctx->current_round() <= 50) return true;
 		if(this->ctx->my_snakes().size() < 3) return true;
 	}
@@ -622,7 +711,7 @@ int AI::try_solid() {//固化策略:足够长+有些危险+蛇已4条+利用率�
 		this->logger.log(1,"主动固化(高效)，利用%d格",best_sol.first);
 		return best_sol.second;
 	}
-	if(best_sol.first >= this->SOL_IDLE_EFFI * this->snake->length() && this->target_list[this->snake->id] == NULL_TARGET) {
+	if(best_sol.first >= this->SOL_IDLE_EFFI * this->snake->length() && this->target_list[this->snake->id].isnull()) {
 		this->logger.log(1,"主动固化(空闲)，利用%d格",best_sol.first);
 		return best_sol.second;
 	}
@@ -639,25 +728,6 @@ int AI::try_solid() {//固化策略:足够长+有些危险+蛇已4条+利用率�
 int AI::try_eat() {
 	const Item& item = this->target_list[this->snake->id].item;//动态类型引用警告
 	return this->assess->find_path(Coord({item.x,item.y}),true);
-}
-int AI::try_hit() {
-	const Snake& tgt = this->target_list[this->snake->id].snake;
-	const int dst = this->assess->get_adjcent_dis(tgt[0].x,tgt[0].y);//这实际上是dist-1
-
-	if(dst == -1) return this->assess->greedy_step(tgt[0],true);
-	
-	int pre_time = 3;
-	if(dst < 5) pre_time = 2;
-	else if(dst < 3) pre_time = 1;
-
-	while(true) {
-		const Coord&& tmp = this->assess->trace_head_dir(pre_time,tgt.id);
-		if(tmp == NULL_COORD || tmp == (*this->snake)[0] || (*this->assess->dist_map[tgt.id])[tmp.x][tmp.y] != pre_time) pre_time--;
-		else break;
-	}
-
-	const Coord&& tgt_pos = this->assess->trace_head_dir(pre_time,tgt.id);
-	return this->assess->find_path(tgt_pos,true);
 }
 
 //Assess类
@@ -766,7 +836,7 @@ void Assess::mixed_search() {
 		if(dst != -1 && dst <= this->MIXED_SEARCH_SNK_DIS_THRESH[0]-1) snk_list.push_back(it->id);
 	}
 
-	this->logger.log(0,"搜索范围内有%d条蛇,深度为%d",snk_list.size(),MIXED_SEARCH_DEPTH[snk_list.size()]);
+	// this->logger.log(0,"搜索范围内有%d条蛇,深度为%d",snk_list.size(),MIXED_SEARCH_DEPTH[snk_list.size()]);
 	
 	Search search(this->ctx,this->logger,snk_list,this->snkid,0);
 
@@ -932,6 +1002,7 @@ void Assess::calc_P_A_score() {
 			const int leng = _enemy->length() + _enemy->length_bank;
 			const int curr = this->calc_snk_air(_enemy->coord_list[0]);
 			const int ftr = this->calc_snk_air(_enemy->coord_list[0],Coord({tx,ty}),extra_go);
+			if(ftr < curr) this->attack_score[i] += leng*0.1;//闭气奖励，或许是limit-2的前身
 			if(ftr < curr && ftr == 1) {
 				this->logger.log(0,"atk响应: id:%2d curr,ftr:%d,%d coord:%d,%d",_enemy->id,curr,ftr,_enemy->coord_list[0].x,_enemy->coord_list[0].y);
 				this->attack_score[i] += leng*this->A_AIR_MULT[1];
@@ -1091,10 +1162,10 @@ int Assess::emergency_handle() {
 void Assess::release_target(int snkid) {
 	if(snkid == -1) snkid = this->snkid;
 	const target &tgt = this->ai.target_list[snkid];//引用元素
-	if(tgt != NULL_TARGET) {
+	if(!tgt.isnull()) {
 		this->logger.log(1,"释放原目标%s",tgt.to_string().c_str());
 		if(tgt.type == 0) this->ai.item_alloc[tgt.item.id] = -1;
-		if(tgt.type == 1) this->ai.snake_alloc[tgt.snake.id] = -1;
+		else assert(false);
 	}
 }
 vector<Item> Assess::get_captured_items(int snkid, int item_tp) {
@@ -1192,6 +1263,25 @@ pii Assess::get_enclosing_area() {
 	}
 	return best;
 }
+bool Assess::check_go_straight(int snkid, int leng) {
+	if(snkid == -1) snkid = this->snkid;
+
+	const Snake& snk = this->ctx.find_snake(snkid);
+	if(snk.length() < leng || leng < 2) return false;
+
+	const Coord &pos0 = snk[0], &pos1 = snk[1];
+	const Coord&& dire = pos1 - pos0;//反蛇头方向的dire
+	for(int i = 3; i <= leng; i++) if(snk[i-1].x != pos0.x + (i-1)*dire.x || snk[i-1].y != pos0.y + (i-1)*dire.y) return false;
+	return true;
+}
+double Assess::get_encounter_angle(int attacker, int target) {
+	const Snake& tgt = this->ctx.find_snake(target);
+	const Coord& atk_mov = tgt[0] - this->ctx.find_snake(attacker)[0];
+	const Coord& tgt_mov = tgt[0] - tgt[1];
+	const double product = atk_mov.x*tgt_mov.x + atk_mov.y*tgt_mov.y;
+	const double leng = atk_mov.get_leng() * tgt_mov.get_leng();
+	return acos(product/leng) / 3.141592653589793 * 180;
+}
 int Assess::get_adjcent_dis(int x, int y, int snkid) {
 	if(snkid == -1) snkid = this->snkid;
 	int ans = (*this->dist_map[snkid])[x][y];
@@ -1210,7 +1300,7 @@ Coord Assess::trace_head_dir(int dist, int snkid) {
 	if(snk.length() == 1) return NULL_COORD;
 
 	const Coord pos0 = snk[0], pos1 = snk[1];
-	const Coord dire = Coord({pos0.x-pos1.x,pos0.y-pos1.y});
+	const Coord&& dire = pos0 - pos1;
 	const Coord ans = Coord({pos0.x+dist*dire.x,pos0.y+dist*dire.y});
 	if(ans.x < 0 || ans.y < 0 || ans.x >= this->x_leng || ans.y >= this->y_leng) return NULL_COORD;
 	return ans;
@@ -1285,7 +1375,7 @@ pii Assess::ray_trace(int snkid) {
 	if(snk.length() < 2) return pii({-1,-1});
 
 	const Coord pos0 = snk[0],pos1 = snk[1];
-	return this->ray_trace_dir(pos0,Coord({pos0.x-pos1.x,pos0.y-pos1.y}));
+	return this->ray_trace_dir(pos0,pos0-pos1);
 }
 pii Assess::ray_trace_dir(const Coord &pos, const Coord &dire) {
 	int fr = 0,en = 0;

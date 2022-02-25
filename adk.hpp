@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <cmath>
 
 /*   Channel API Begins   */
 
@@ -257,6 +258,8 @@ struct Item
 	int x, y, id, time, type, param;
 	bool eaten, expired;
 
+	inline bool operator==(const Item &b) const { return this->id == b.id; }
+	inline bool operator!=(const Item &b) const { return this->id != b.id; }
 	const std::string to_string() const {
 		std::string st;
 		st.resize(50);
@@ -267,12 +270,15 @@ struct Item
 	void print() const {printf("%s\n",to_string().c_str());}
 };
 const Item NULL_ITEM { 0, 0, -1, 0, 0, 0, false, false };
-inline bool operator==(const Item &a, const Item &b) { return a.id == b.id; }
-inline bool operator!=(const Item &a, const Item &b) { return a.id != b.id; }
 
 struct Coord
 {
 	int x, y;
+	inline bool operator==( const Coord& b ) const { return ( this->x == b.x ) && ( this->y == b.y ); }
+	inline bool operator!=( const Coord& b ) const { return !( *this == b ); }
+	inline Coord operator+(const Coord& b) const {return Coord({x+b.x,y+b.y}); }
+	inline Coord operator-(const Coord& b) const { return Coord({x-b.x,y-b.y}); }
+	double get_leng() const { return std::sqrt((x*x)+(y*y)); }
 	const std::string to_string() const {
 		std::string st;
 		st.resize(10);
@@ -281,8 +287,7 @@ struct Coord
 	}
 };
 const Coord NULL_COORD {-1, -1};
-inline bool operator==( const Coord& lhs, const Coord& rhs ) { return ( lhs.x == rhs.x ) && ( lhs.y == rhs.y ); }
-inline bool operator!=( const Coord& lhs, const Coord& rhs ) { return !( lhs == rhs ); }
+
 
 struct Snake
 {
@@ -293,6 +298,8 @@ struct Snake
 	size_t length() const { return coord_list.size(); }
 	bool has_laser() const { return railgun_item.id >= 0; }
 
+	inline bool operator==(const Snake& b) const { return this->id == b.id; }
+	inline bool operator!=(const Snake& b) const { return this->id != b.id; }
 	const Coord& operator[]( size_t idx ) const { return coord_list[idx]; }
 	const std::string to_string() const {
 		std::string st;
@@ -303,20 +310,10 @@ struct Snake
 	void print() const {printf("%s\n",to_string().c_str());}
 };
 const Snake NULL_SNAKE {std::vector<Coord>(), -1, 0, 0, NULL_ITEM};
-inline bool operator==( const Snake& lhs, const Snake& rhs ) { return lhs.id == rhs.id; }
-inline bool operator!=( const Snake& lhs, const Snake& rhs ) { return lhs.id != rhs.id; }
 
-struct Operation
-{
+struct Operation {//1=right,2=up,3=left,4=down,5=laser,6=split
 	int type;
 };
-
-const Operation OP_RIGHT { 1 };
-const Operation OP_UP { 2 };
-const Operation OP_LEFT { 3 };
-const Operation OP_DOWN { 4 };
-const Operation OP_RAILGUN { 5 };
-const Operation OP_SPLIT { 6 };
 
 #define PROPERTY( TYPE_NAME, NAME )                   \
 public:                                               \
@@ -335,8 +332,9 @@ public:
 	bool do_operation( const Operation& op );
 	bool skip_operation();
 
-	//计算目前的蛇长，返回[0号玩家，1号玩家]
+	//计算目前蛇的总长，返回[0号玩家，1号玩家]
 	std::pair<int,int> calc_snake_leng() const;
+	//计算目前总墙数，返回[0号玩家，1号玩家]
 	std::pair<int,int> calc_wall() const;
 
 	const std::vector<Snake>& my_snakes() const;
@@ -494,18 +492,15 @@ inline Snake& Context::current_snake()
 
 inline bool Context::move_snake( const Operation& op )
 {
-	auto& snake = current_snake();
-	auto& cl = snake.coord_list;
+	Snake& snake = current_snake();
+	std::vector<Coord>& cl = snake.coord_list;
 
 	if ( _current_round > GROWING_ROUNDS || snake.id != snake.camp )
 	{
-		if ( snake.length_bank > 0 )
-		{
-			--snake.length_bank;
-		}
+		if ( snake.length_bank > 0 ) --snake.length_bank;
 		else
 		{
-			Coord tail = cl.back();
+			const Coord& tail = cl.back();
 			_snake_map[tail.x][tail.y] = -1;
 			cl.pop_back();
 		}
@@ -513,55 +508,31 @@ inline bool Context::move_snake( const Operation& op )
 
 	static int dx[] = { 0, 1, 0, -1, 0 }, dy[] = { 0, 0, 1, 0, -1 };
 	int nx = cl[0].x + dx[op.type], ny = cl[0].y + dy[op.type];
-	Coord nh = { nx, ny };
+	const Coord nh = { nx, ny };
 
 	bool dead = false, sealed = false;
-	if ( nx < 0 || ny < 0 || nx >= _length || ny >= _width || _wall_map[nx][ny] != -1 )
-	{
-		dead = true;
-	}
+	if ( nx < 0 || ny < 0 || nx >= _length || ny >= _width || _wall_map[nx][ny] != -1 ) dead = true;
 	else if ( _snake_map[nx][ny] == snake.id )
 	{
-		if ( cl.size() >= 2 && nh == cl[1] )
-		{
-			return false;
-		}
+		if ( cl.size() >= 2 && nh == cl[1] ) return false;
 		cl.insert( cl.begin(), nh );
 		sealed = true;
 	}
-	else if ( _snake_map[nx][ny] != -1 )
-	{
-		dead = true;
-	}
+	else if ( _snake_map[nx][ny] != -1 ) dead = true;
 
-	if ( dead )
-	{
-		remove_snake( snake.id );
-	}
-	else if ( sealed )
-	{
-		seal_region();
-	}
+	if ( dead ) remove_snake( snake.id );
+	else if ( sealed ) seal_region();
 	else
 	{
 		cl.insert( cl.begin(), nh );
 		_snake_map[nx][ny] = snake.id;
 		if ( _item_map[nx][ny] != -1 )
 		{
-			auto& item = find_item( _item_map[nx][ny] );
+			Item& item = find_item( _item_map[nx][ny] );
 			item.eaten = true;
-			if ( item.type == 0 )
-			{
-				snake.length_bank += item.param;
-			}
-			else if ( item.type == 2 )
-			{
-				snake.railgun_item = item;
-			}
-			else
-			{
-				return false;
-			}
+			if ( item.type == 0 ) snake.length_bank += item.param;
+			else if ( item.type == 2 ) snake.railgun_item = item;
+			else return false;
 			_item_map[nx][ny] = -1;
 		}
 	}
@@ -604,7 +575,7 @@ inline void Context::flood_fill( TwoDimArray<int>& map, int x, int y, int v, boo
 	q.push( { x, y } );
 	while ( !q.empty() )
 	{
-		auto c = q.front();
+		const Coord& c = q.front();
 		q.pop();
 		int cx = c.x, cy = c.y;
 		if ( cx < 0 || cx >= _length || cy < 0 || cy >= _width)
@@ -612,8 +583,7 @@ inline void Context::flood_fill( TwoDimArray<int>& map, int x, int y, int v, boo
 		    dir_ok[v] = false;
 		    continue;
 		}
-		if (map[cx][cy] != 0)
-		    continue;
+		if (map[cx][cy] != 0) continue;
 		map[cx][cy] = v;
 		q.push( { cx + 1, cy } );
 		q.push( { cx - 1, cy } );
@@ -621,7 +591,6 @@ inline void Context::flood_fill( TwoDimArray<int>& map, int x, int y, int v, boo
 		q.push( { cx, cy - 1 } );
 	}
 }
-
 
 inline void Context::seal_region()
 {
@@ -651,14 +620,8 @@ inline void Context::seal_region()
 	    int dir1, dir2;
 	    int ix = snake[i].x, iy = snake[i].y;
 	    int jx = snake[( i + 1 ) % len].x, jy = snake[( i + 1 ) % len].y;
-	    if ( ix == jx )
-	    {
-	        dir1 = iy > jy ? 2 : 0;
-	    }
-	    else
-	    {
-	        dir1 = ix > jx ? 1 : 3;
-	    }
+	    if ( ix == jx ) dir1 = iy > jy ? 2 : 0;
+	    else dir1 = ix > jx ? 1 : 3;
 	    dir2 = ( dir1 + 2 ) % 4;
 
 	    // BFS
@@ -677,10 +640,7 @@ inline void Context::seal_region()
 
 				// Eliminate inner snake
 				int snake_id = _snake_map[i][j];
-				if ( snake_id != -1 )
-				{
-					remove_snake( snake_id );
-				}
+				if ( snake_id != -1 ) remove_snake( snake_id );
 			}
 		}
 	}

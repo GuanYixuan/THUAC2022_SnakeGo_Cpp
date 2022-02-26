@@ -235,6 +235,8 @@ class Assess {
 		//根据find_path_bfs的结果设置一个走向tgt的引导，根据它与mixed_score之和的最优值走一格
 		int find_path(const Coord &tgt, double (*dir_assess)(int ind, bool directed, const mix_score_t& scores) = DIR_ASSESS_REGULAR);
 		static double DIR_ASSESS_SOLID(int ind, bool directed, const mix_score_t& scores);
+		//往"安全的"地方走一格
+		int go_safe();
 		//处理紧急情况
 		int emergency_handle();
 		//释放snkid的目标物品
@@ -323,6 +325,7 @@ class Assess {
 		//find_path系列常数
 		const static int BANK_SIZ_LIST_SIZE = 100;
 		static double DIR_ASSESS_REGULAR(int ind, bool directed, const mix_score_t& scores);
+		static double DIR_ASSESS_GO_SAFE(int ind, bool directed, const mix_score_t& scores);
 		//scan_act系列常数
 		const static int SCAN_ACT_MAX_DEPTH = 6;
 		constexpr static double SCAN_ACT_NEAR_REDUCE[2] = {0.2,0.75};//敌,我
@@ -518,7 +521,7 @@ int AI::judge(const Snake &snake, const Context &ctx) {
 			return 6;
 		}
 
-		return this->assess->random_step() + 1;
+		return this->assess->go_safe() + 1;
 	}
 
 	
@@ -655,19 +658,29 @@ void AI::distribute_tgt() {
 	}
 
 	// //没分配到食物目标
-	int solid_cnt = 0;
-	for(const Snake& snk : this->ctx->my_snakes()) {
-		if(this->target_list[snk.id].type == 3) solid_cnt++;
-		if(!this->target_list[snk.id].isnull()) continue;
-		if(solid_cnt >= 2 || this->ctx->my_snakes().size() <= 3) break;
+	// int solid_cnt = 0;
+	// for(const Snake& snk : this->ctx->my_snakes()) if(this->target_list[snk.id].type == 3) solid_cnt++;
+	// pii&& walls = this->ctx->calc_wall();
+	// pii&& lengs = this->ctx->calc_snake_leng();
+	// int obstacles = walls.first + walls.second + lengs.first + lengs.second;
 
+	// for(const Snake& snk : this->ctx->my_snakes()) {
+	// 	if(!this->target_list[snk.id].isnull()) continue;
+	// 	if(solid_cnt >= 2 || this->ctx->my_snakes().size() <= 3) break;
+
+	// 	double score = snk.length() + snk.length_bank;//考虑体长
+	// 	if(obstacles > 105) score += 3;//考虑拥挤程度
+	// 	else if(obstacles > 95) score += 2;
+	// 	else if(obstacles > 85) score += 1;
+	// 	else if(obstacles < 50) score -= 3;
+	// 	else if(obstacles < 60) score -= 1;
 		
-		if(snk.length() + snk.length_bank > 10) {
-			this->logger.log(1,"目标分配(solid):蛇%2d",snk.id);
-			this->target_list[snk.id] = target({3,NULL_ITEM,NULL_KL_ADDON});
-		}
-		solid_cnt++;
-	}
+	// 	if(score > 10) {
+	// 		this->logger.log(1,"目标分配(solid):蛇%2d",snk.id);
+	// 		this->target_list[snk.id] = target({3,NULL_ITEM,NULL_KL_ADDON});
+	// 	}
+	// 	solid_cnt++;
+	// }
 }
 bool AI::try_split() {
 	// this->logger.log(0,"尾气:%d sp:%d",this->assess->calc_snk_air(this->snake->coord_list.back()),this->assess->can_split());
@@ -733,29 +746,13 @@ int AI::do_solid() {
 		return this->assess->random_step();
 	}
 
-	//暂时还不够聪明
-	int best_val = -1;
-	Coord best_pos;
-	for(int i = 3; i < this->snake->coord_list.size(); i++) {
-		const Coord& now = this->snake->coord_list[i];
-		const int exp_time = this->snake->coord_list.size()-i+this->snake->length_bank;//末尾是1
-		if(this->assess->get_adjcent_dis(now.x,now.y,this->snake->id)+1 < exp_time) {
-			if(i+1 > best_val) {
-				best_val = i+1;
-				best_pos = now;
-			}
-		}
-	}
+	//先尝试用已有的直线部分
 
-	if(best_val == -1) {//可见未来包不起来,暂时放弃
-		this->logger.log(1,"放弃固化");
-		this->target_list[this->snake->id] = NULL_TARGET;
-		return this->assess->random_step();
-	}
+
 	
-	int dis = this->assess->get_adjcent_dis(best_pos.x,best_pos.y,this->snake->id);
-	if(dis < 1 && dis != -1) return this->assess->get_enclosing_area().second;//最后一步!
-	return this->assess->find_path(best_pos,this->assess->DIR_ASSESS_SOLID);
+	// int dis = this->assess->get_adjcent_dis(best_pos.x,best_pos.y,this->snake->id);
+	// if(dis < 1 && dis != -1) return this->assess->get_enclosing_area().second;//最后一步!
+	// return this->assess->find_path(best_pos,this->assess->DIR_ASSESS_SOLID);
 }
 
 //Assess类
@@ -1145,6 +1142,25 @@ int Assess::find_path(const Coord &tgt, double (*dir_assess)(int ind, bool direc
 	else this->logger.log(1,"寻路:%d 目标:(%2d,%2d)",bfs_list[0].actid,tgt.x,tgt.y);
 	return bfs_list[0].actid;
 }
+int Assess::go_safe() {
+	int occp[4];
+	for(int i = 0; i < 4; i++) occp[i] = 0;
+	for(int x = 0; x < 16; x++) for(int y = 0; y < 16; y++) if(this->ctx.wall_map()[x][y] != -1) occp[(x>=8)+2*(y<8)]++;
+	for(int x = 0; x < 16; x++) for(int y = 0; y < 16; y++) if(this->ctx.snake_map()[x][y] != -1) occp[(x>=8)+2*(y<8)]++;
+
+	int best = 0, now = (this->this_snake[0].x>=8) + 2*(this->this_snake[0].y<8);
+	for(int i = 1; i < 4; i++) if(occp[i] < occp[best]) best = i;
+
+	if(now == best) return this->random_step();
+
+	this->logger.log(1,"走向安全区%d",best);
+	for(int x = 0; x < 16; x++) 
+		for(int y = 0; y < 16; y++) 
+			if((x>=8)+2*(y<8) == best && (*this->dist_map[this->snkid])[x][y] != -1) return this->find_path(Coord({x,y}),this->DIR_ASSESS_GO_SAFE);
+	
+	//估计是路都被堵住了...
+	return this->random_step();
+}
 double Assess::DIR_ASSESS_REGULAR(int ind, bool directed, const mix_score_t& scores) {
 	double ans = scores.mixed_score;
 	if(directed) ans += 6;
@@ -1153,6 +1169,11 @@ double Assess::DIR_ASSESS_REGULAR(int ind, bool directed, const mix_score_t& sco
 double Assess::DIR_ASSESS_SOLID(int ind, bool directed, const mix_score_t& scores) {
 	double ans = scores.polite_score + scores.search_score + scores.safe_score * 0.5;
 	if(directed) ans += 15;
+	return ans;
+}
+double Assess::DIR_ASSESS_GO_SAFE(int ind, bool directed, const mix_score_t& scores) {
+	double ans = scores.mixed_score;
+	if(directed) ans += 2;
 	return ans;
 }
 int Assess::emergency_handle() {

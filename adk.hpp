@@ -278,7 +278,23 @@ struct Coord
 	inline bool operator!=( const Coord& b ) const { return !( *this == b ); }
 	inline Coord operator+(const Coord& b) const {return Coord({x+b.x,y+b.y}); }
 	inline Coord operator-(const Coord& b) const { return Coord({x-b.x,y-b.y}); }
+	inline int operator*(const Coord& b) const { return this->x*b.x + this->y*b.y; }
 	double get_leng() const { return std::sqrt((x*x)+(y*y)); }
+	int get_block_dist(const Coord& b) const { return abs(this->x-b.x) + abs(this->y-b.y); }
+	Coord get_verti() const {
+		if(this->x == 0 && this->y != 0) return Coord({1,0});
+		if(this->y == 0 && this->x != 0) return Coord({0,1});
+		assert(false);
+	}
+	Coord get_reverse() const { return Coord({-this->x,-this->y}); }
+	int get_actid() const {
+		if(this->x == 1 && this->y == 0) return 0;
+		if(this->x == 0 && this->y == 1) return 1;
+		if(this->x == -1 && this->y == 0) return 2;
+		if(this->x == 0 && this->y == -1) return 3;
+		assert(false);
+	}
+
 	const std::string to_string() const {
 		std::string st;
 		st.resize(10);

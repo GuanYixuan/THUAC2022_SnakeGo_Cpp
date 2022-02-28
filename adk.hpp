@@ -281,6 +281,7 @@ struct Coord
 	inline int operator*(const Coord& b) const { return this->x*b.x + this->y*b.y; }
 	double get_leng() const { return std::sqrt((x*x)+(y*y)); }
 	int get_block_dist(const Coord& b) const { return abs(this->x-b.x) + abs(this->y-b.y); }
+	double get_angle(const Coord& b) const { return acos(((*this)*b)/this->get_leng()/b.get_leng()) / 3.141592653589793 * 180; }
 	Coord get_verti() const {
 		if(this->x == 0 && this->y != 0) return Coord({1,0});
 		if(this->y == 0 && this->x != 0) return Coord({0,1});

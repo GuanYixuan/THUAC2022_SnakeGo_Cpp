@@ -361,7 +361,7 @@ class Assess {
 };
 
 //Search类
-int upd_cnt;
+#define LOG_UPDATE(src,lst,tgt,val) this->logger.log(0,"Init return [%d]_%d->[%d] (%.1f)",src,lst,tgt,val)
 const int SNK_SIMU_TYPE_MAX = 128;
 //【snklst一定要包括snkid】【不允许在turn=513时调用search】
 //【snkid不是当前行动的蛇导致的后果暂不明确】
@@ -370,7 +370,6 @@ struct search_node {
 	act_score_t best;
 	int last_step;
 	int fa,childs,returned;
-	bool max_layer;
 };
 class Search {
 	public:
@@ -441,45 +440,42 @@ void Search::search() {
 	}
 
 	this->search_bfs();
-	for(int i = 1; i <= this->act_maxv && i < this->node_list.size(); i++) if(this->node_list[i].fa == 0) this->results[this->node_list[i].last_step] = this->node_list[i].best;
+	for(int i = 1; i <= this->act_maxv && i < this->node_list.size(); i++) {
+		if(this->node_list[i].fa == 0) {
+			// this->logger.log(0,"collected action %d from %d (%.2f)",this->node_list[i].last_step,i,this->node_list[i].best.val);
+			this->results[this->node_list[i].last_step] = this->node_list[i].best;
+		}
+	}
+	for(int i = 0; i < this->act_maxv; i++) if(this->results[i] == ACT_SCORE_NULL) this->results[i].val = -100;
 
 	this->logger.log(0,"searched:%d",this->search_cnt);
 	if(this->search_cnt >= this->MAX_SEARCH_COUNT) this->logger.log(1,"局面数超出搜索限制");
 }
 void Search::search_bfs() {
-	bool max_layer = false;
-	if(this->ctx0.find_snake(this->ctx0._current_snake_id).camp == this->camp) max_layer = true;
-	this->node_list.push_back(search_node({ctx0,ACT_SCORE_NULL,-1,-1,0,0,max_layer}));
+	this->node_list.push_back(search_node({ctx0,ACT_SCORE_NULL,-1,-1,0,0}));
 	this->search_qu.push(0);
 
 	while(!this->search_qu.empty()) {
-		// this->logger.log(0,"pre_pop");
 		int now = this->search_qu.front();
 		this->search_qu.pop();
-		// this->logger.log(0,"post_pop");
 		this->logger.flush();
 
-		// this->logger.log(0,"pre_assert");
 		assert(this->node_list[now].ctx.current_round() <= this->end_turn);
 		this->search_cnt++;
-		// if(this->search_cnt % 10 == 0) this->logger.log(0,"now at : [%d],fa:%d curr_round:%d lst:%d curr_snk:%d",now,this->node_list[now].fa,this->node_list[now].ctx.current_round(),this->node_list[now].last_step,this->node_list[now].ctx._current_snake_id);
-		// this->logger.log(0,"post_assert");
-		// this->logger.flush();
+		// this->logger.log(0,"now at : [%d],fa:%d lst:%d curr_snk:%d max_layer:%d curr_round:%d",now,this->node_list[now].fa,this->node_list[now].last_step,this->node_list[now].ctx._current_snake_id,this->node_list[now].ctx.current_snake().camp == this->camp,this->node_list[now].ctx.current_round());
 
 		//检查终止条件
-		// this->logger.log(0,"pre_check");
 		bool end = false;
 		if(this->node_list[now].ctx.current_round() == this->end_turn && this->node_list[now].ctx._current_snake_id == this->snkid) end = true;//到时间结束
 		if(!this->node_list[now].ctx.inlist(this->snkid)) end = true;//蛇死
 		if(this->search_cnt >= this->MAX_SEARCH_COUNT) end = true;//局面超限
 		if(end) {//不再扩展
 			const double score = (*this->value_func)(this->ctx0,this->node_list[now].ctx,this->snkid);
+			this->node_list[now].best.val = score;
+			// LOG_UPDATE(now,this->node_list[now].last_step,this->node_list[now].fa,score);
 			this->update_value(act_score_t({this->node_list[now].last_step,score}),this->node_list[now].fa);
-			// this->logger.log(0,"check_returned");
 			continue;
 		}
-		// this->logger.log(0,"post_check");
-		// this->logger.flush();
 		//剪枝
 		//？
 
@@ -487,49 +483,26 @@ void Search::search_bfs() {
 		// this->logger.log(0,"pre_extend");
 		// this->logger.flush();
 		for(int i = 0; i < this->act_maxv; i++) {
-			// this->logger.log(0,"pre_check");
-			// this->logger.flush();
 			if(!this->node_list[now].ctx.check_operation(i+1)) continue;
-			// this->logger.log(0,"post_check");
-			// this->logger.flush();
 
 			//先初始化ctx
-			// this->logger.log(0,"init:%d last:%d",this->node_list.size()-1,i);
-			this->node_list.push_back(search_node({this->node_list[now].ctx,ACT_SCORE_NULL,i,now,0,0,false}));
-			// this->logger.log(0,"pre_op");
-			// this->logger.flush();
+			// this->logger.log(0,"push:[%d]->[%d] last:%d",now,this->node_list.size(),i);
+			this->node_list.push_back(search_node({this->node_list[now].ctx,ACT_SCORE_NULL,i,now,0,0}));
+			this->node_list[now].childs++;
 			this->node_list.back().ctx.do_operation(Operation({i+1}));
-			// this->logger.log(0,"aft_op");
-			// this->logger.flush();
 			
 			//如果撞死了,直接返回
 			if(!this->node_list.back().ctx.inlist(this->snkid)) {
 				const double score = (*this->value_func)(this->ctx0,this->node_list.back().ctx,this->snkid);
+				this->node_list.back().best.val = score;
+				// LOG_UPDATE(this->node_list.size()-1,i,now,score);
 				this->update_value(act_score_t({i,score}),now);
 				continue;
 			}
 
+			while(!this->snk_simu_type[this->node_list.back().ctx._current_snake_id] && this->node_list.back().ctx.inlist(this->snkid)) this->node_list.back().ctx.skip_operation();
 
-			// this->logger.log(0,"pre_skip");
-			// this->logger.flush();
-			while(!this->snk_simu_type[this->node_list.back().ctx._current_snake_id] && this->node_list.back().ctx.inlist(this->snkid)) {
-				this->node_list.back().ctx.skip_operation();
-				// this->logger.log(0,"skipped to:%d",this->node_list.back().ctx._current_snake_id);
-			}
-			// this->logger.log(0,"post_skip");
-			// this->logger.flush();
-
-			//再初始化max_layer
-			// this->logger.log(0,"pre_init");
-			// this->logger.flush();
-			if(this->node_list.back().ctx.find_snake(this->node_list.back().ctx._current_snake_id).camp == this->camp) this->node_list.back().max_layer = true;
-			// this->logger.log(0,"post_init");
-			// this->logger.flush();
-
-			// this->logger.log(0,"pushed:%d",this->node_list.size()-1);
-			// this->search_cnt++;
 			this->search_qu.push(this->node_list.size()-1);
-			this->node_list[now].childs++;
 		}
 		// this->logger.log(0,"post_extend");
 		// this->logger.flush();
@@ -540,9 +513,10 @@ void Search::update_value(const act_score_t& best, int fa) {
 	assert(best != ACT_SCORE_NULL);
 
 	search_node& tgt = this->node_list[fa];
+	// this->logger.log(0,"return [?]_%d->[%d] max:%d (%.2f) fa_curr:%.2f",best.actid,fa,tgt.ctx.current_snake().camp == this->camp,best.val,this->node_list[fa].best.val);
 	if(tgt.best == ACT_SCORE_NULL) tgt.best = best;
-	else if(tgt.max_layer && best.val > tgt.best.val) tgt.best = best;
-	else if(!tgt.max_layer && best.val < tgt.best.val) tgt.best = best;
+	else if(tgt.ctx.current_snake().camp == this->camp && best.val > tgt.best.val) tgt.best = best;
+	else if(tgt.ctx.current_snake().camp != this->camp && best.val < tgt.best.val) tgt.best = best;
 
 	tgt.returned++;
 	if(tgt.returned == tgt.childs && tgt.fa != -1) this->update_value(act_score_t({tgt.last_step,tgt.best.val}), tgt.fa);
@@ -1194,6 +1168,7 @@ void Assess::calc_spd_map() {
 }
 void Assess::mixed_search() {
 	const int MIXED_SEARCH_DEPTH[9] = {0,7,4,2,2,1,1,1,1};
+	// const int MIXED_SEARCH_DEPTH[9] = {0,2,2,2,2,1,1,1,1};
 	vector<int> snk_list;
 	snk_list.push_back(this->snkid);
 	for(auto it = this->ctx.my_snakes().begin(); it != this->ctx.my_snakes().end(); it++) {
@@ -1205,20 +1180,19 @@ void Assess::mixed_search() {
 		const int dst = this->get_adjcent_dis(this->pos.x,this->pos.y,it->id);
 		if(dst != -1 && dst <= this->MIXED_SEARCH_SNK_DIS_THRESH[0]-1) snk_list.push_back(it->id);
 	}
-
-	// this->logger.log(0,"搜索范围内有%d条蛇,深度为%d",snk_list.size(),MIXED_SEARCH_DEPTH[snk_list.size()]);
 	
 	Search search(this->ctx,this->logger,snk_list,this->snkid);
 
 	int depth = MIXED_SEARCH_DEPTH[snk_list.size()];
-	if(this->ai.target_list[this->snkid].type == 1) search.setup_search(depth,this->attack_val_func,4);
+	if(this->ai.target_list[this->snkid].type == 1) search.setup_search(depth,this->attack_val_func,5);
 	else search.setup_search(depth,this->mixed_val_func,4);
 	search.search();
 
 	const act_score_t* ans = search.results;//更新结果
 	for(int i = 0; i < ACT_MAXV; i++) this->search_score[i] = ans[i].val;
 	for(int i = 0; i < ACT_LEN; i++) if(ans[i].val > -900) this->mixed_score[i] += ans[i].val * this->MIXED_SEARCH_WEIGHT;
-	this->logger.log(0,"dep:%d search_val:[%.1f,%.1f,%.1f,%.1f]",depth,ans[0].val,ans[1].val,ans[2].val,ans[3].val);
+	this->logger.log(0,"搜索范围内有%d条蛇,深度为%d",snk_list.size(),MIXED_SEARCH_DEPTH[snk_list.size()]);
+	this->logger.log(0,"search_val:[%.1f,%.1f,%.1f,%.1f]",ans[0].val,ans[1].val,ans[2].val,ans[3].val);
 }
 double Assess::mixed_val_func(const Context& begin, const Context& end, int snkid) {
 	double ans = 0;
@@ -1375,7 +1349,6 @@ void Assess::calc_P_A_score() {
 	if(will_log_pol) this->logger.log(0,"pol_score:[%.1f,%.1f,%.1f,%.1f]",this->polite_score[0],this->polite_score[1],this->polite_score[2],this->polite_score[3]);
 }
 void Assess::find_path_bfs(int snkid) {
-	bool will_log = false;
 	if(snkid == -1) snkid = this->snkid;
 	const vector<int> &&bank_list = this->bank_siz_list(snkid);
 	const int nx = this->ctx.find_snake(snkid)[0].x,ny = this->ctx.find_snake(snkid)[0].y;
@@ -1390,8 +1363,6 @@ void Assess::find_path_bfs(int snkid) {
 		const find_path_q_t now = qu.front();
 		qu.pop();
 
-		if(now.step > 45) will_log = true;
-
 		for(int i = 0; i < ACT_LEN; i++) {
 			const int tx = now.x+ACT[i][0],ty = now.y+ACT[i][1];
 			if(!this->check_nstep_norm(tx,ty,now.step+1,snkid,bank_list[now.step])) continue;
@@ -1403,7 +1374,6 @@ void Assess::find_path_bfs(int snkid) {
 		}
 	}
 
-	// if(will_log) this->logger.log(0,)
 }
 int Assess::get_bfs_dis(const Coord& tgt, int snkid) {
 	if(snkid == -1) snkid = this->snkid;

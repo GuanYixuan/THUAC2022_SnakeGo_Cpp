@@ -376,6 +376,8 @@ public:
 	Snake& find_snake( int snake_id );
 	int _current_snake_id, _next_snake_id;
 
+	Snake& current_snake();
+
 private:
 	PROPERTY( int, length );
 	PROPERTY( int, width );
@@ -396,8 +398,9 @@ private:
 	std::vector<int> _new_snakes;
 	std::vector<int> _remove_snakes;
 
+	int _skipped_length[2] = {0,0};
+
 	// Helper functions
-	Snake& current_snake();
 	const Snake& current_snake() const;
 	bool move_snake( const Operation& op );
 
@@ -409,7 +412,6 @@ private:
 	bool split_snake(bool check_only = false);
 	bool find_next_snake();
 	bool round_preprocess();
-
 };
 
 inline Context::Context( int length, int width, int max_round, std::vector<Item>&& item_list ): 
@@ -438,6 +440,7 @@ _item_list(ctx._item_list), _snake_list_0(ctx._snake_list_0), _snake_list_1(ctx.
 _tmp_list_0(ctx._tmp_list_0), _tmp_list_1(ctx._tmp_list_1),
 _current_snake_id(ctx._current_snake_id), _next_snake_id(ctx._next_snake_id), _new_snakes(ctx._new_snakes), _remove_snakes(ctx._remove_snakes)
 {
+	for(int i = 0; i < 2; i++) this->_skipped_length[i] = ctx._skipped_length[i];
 	// std::printf("copy called! with leng%d->%d\n",ctx._snake_list_0.size(),this->_snake_list_0.size());
 }
 
@@ -472,11 +475,11 @@ bool Context::inlist(int snkid) const {
 	return false;
 }
 std::pair<int,int> Context::calc_snake_leng() const {
-	std::pair<int,int> ans(0,0);
+	std::pair<int,int> ans(this->_skipped_length[0],this->_skipped_length[1]);
 	for(int x = 0; x < this->_length; x++) {
 		for(int y = 0; y < this->_width; y++) {
 			if(this->_snake_map[x][y] != -1) {
-				if(this->_snake_map[x][y] == 0) ans.first++;
+				if(this->find_snake(this->_snake_map[x][y]).camp == 0) ans.first++;
 				else ans.second++;
 			}
 		}
@@ -527,7 +530,19 @@ inline bool Context::do_operation( const Operation& op ) {
 
 	return !find_next_snake() || round_preprocess();
 }
-bool Context::skip_operation() {
+bool Context::skip_operation() {//除了skip，还得帮着把尾巴收一下
+	Snake& snake = this->current_snake();
+
+	if ( _current_round > GROWING_ROUNDS || snake.id != snake.camp ) {//不在初始伸长状态
+		if ( snake.length_bank > 0 ) --snake.length_bank;
+		else if(snake.length() > 1) {
+			const Coord& tail = snake.coord_list.back();
+			_snake_map[tail.x][tail.y] = -1;
+			snake.coord_list.pop_back();
+			this->_skipped_length[snake.camp]++;
+		}
+	}
+
 	return !find_next_snake() || round_preprocess();
 }
 

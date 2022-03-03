@@ -5,14 +5,8 @@
 #include "adk.hpp"
 using namespace std;
 
-#define MAP_LENGTH 16
-const int ACT_LEN = 4;
-const int ACT_MAXV = 6;
-const int ACT[4][2] = {{1,0},{0,1},{-1,0},{0,-1}};
-const Coord ACT_CRD[4] = {Coord({1,0}),Coord({0,1}),Coord({-1,0}),Coord({0,-1})};
-
 //Logger类
-const bool LOG_SWITCH = true;
+const bool LOG_SWITCH = false;
 const bool LOG_STDOUT = false;
 const int LOG_LEVEL = 0;
 class Logger {
@@ -367,22 +361,31 @@ class Assess {
 };
 
 //Search类
+int upd_cnt;
 const int SNK_SIMU_TYPE_MAX = 128;
 //【snklst一定要包括snkid】【不允许在turn=513时调用search】
 //【snkid不是当前行动的蛇导致的后果暂不明确】
+struct search_node {
+	Context ctx;
+	act_score_t best;
+	int last_step;
+	int fa,childs,returned;
+	bool max_layer;
+};
 class Search {
 	public:
-		Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid, int lst_search_cnt);
-
-		//dep=0的搜索返回的各动作的val【ACT的下标】
-		act_score_t search_vals[ACT_MAXV];
+		Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid);
 
 		void setup_search(int max_turn, double (*value_func)(const Context& begin, const Context& end, int snkid), int act_maxv = 4);
 		//发起局部搜索
 		//返回的act_score_t中的actid【不是ACT的下标】
-		act_score_t search();
+		void search();
 		
-		int search_cnt;
+		act_score_t results[ACT_MAXV];
+		vector<search_node> node_list;
+		queue<int> search_qu;
+		
+		int search_cnt = 0;
 	private:
 		Logger& logger;
 		Context ctx0;
@@ -393,17 +396,19 @@ class Search {
 		bool snk_simu_type[SNK_SIMU_TYPE_MAX];
 		double (*value_func)(const Context& begin, const Context& end, int snkid);
 
-		vector<Context> dfs_stack;
-		//局部搜索，采用模拟递归的方式进行，返回(走法,最大val)
-		act_score_t search_dfs(int stack_ind, int last_layer, const act_score_t& curr_val);
-		act_score_t search_comp(const act_score_t &a, const act_score_t &b, bool max_layer);
+		void search_bfs();
+		void update_value(const act_score_t& best, int fa);
 
 		
-		const static int MAX_SEARCH_COUNT = 100000;
+		const static int MAX_SEARCH_COUNT = 50000;
 };
-Search::Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid, int lst_search_cnt) :
-ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid), search_cnt(lst_search_cnt)
+Search::Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid) :
+ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid)
 {
+	this->node_list.clear();
+	while(!this->search_qu.empty()) this->search_qu.pop();
+
+	for(int i = 0; i < ACT_MAXV; i++) results[i] = ACT_SCORE_NULL;
 	for(int i = 0; i < SNK_SIMU_TYPE_MAX; i++) snk_simu_type[i] = true;//所有id都在模拟范围内（包括未来的id）
 	
 	vector<int> snk_list;
@@ -419,12 +424,8 @@ ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid), search_cn
 		}
 		if(!keep) snk_simu_type[*it] = false;//,printf("remove:%d\n",*it);//排除id
 	}
-	//帮ctx0跳
+	// 帮ctx0跳
 	while(!this->snk_simu_type[this->ctx0._current_snake_id]) this->ctx0.skip_operation();
-	//初始化search_vals
-	const bool max_layer = (this->ctx0.find_snake(this->ctx0._current_snake_id).camp == camp);
-	for(int i = 0; i < ACT_MAXV; i++) this->search_vals[i] = act_score_t({i,-1000});
-	if(!max_layer) for(int i = 0; i < ACT_MAXV; i++) this->search_vals[i].val *= -1;
 }
 void Search::setup_search(int max_turn, double (*value_func)(const Context& begin, const Context& end, int snkid), int act_maxv) {
 	this->act_maxv = act_maxv;
@@ -433,72 +434,119 @@ void Search::setup_search(int max_turn, double (*value_func)(const Context& begi
 	this->end_turn = min(this->ctx0.current_round() + this->max_turn,this->ctx0.max_round());//【最后一回合可能搜不完全】
 	// printf("setup: start_turn:%d max_turn:%d end_turn:%d\n",this->ctx0.current_round(),this->max_turn,this->end_turn);
 }
-act_score_t Search::search() {
-	this->search_cnt = 0;
-	this->dfs_stack.push_back(ctx0);
+void Search::search() {
+	if(this->ctx0.current_round() >= this->ctx0.max_round()) {
+		for(int i = 0; i < ACT_MAXV; i++) this->results[i].val = 0;
+		return;
+	}
 
-	if(this->ctx0.current_round() > this->ctx0.max_round()) return ACT_SCORE_NULL;
+	this->search_bfs();
+	for(int i = 1; i <= this->act_maxv && i < this->node_list.size(); i++) if(this->node_list[i].fa == 0) this->results[this->node_list[i].last_step] = this->node_list[i].best;
 
-	act_score_t ans = this->search_dfs(0,-1,ACT_SCORE_NULL);
-	// this->logger.log(0,"searched:%d",this->search_cnt);
+	this->logger.log(0,"searched:%d",this->search_cnt);
 	if(this->search_cnt >= this->MAX_SEARCH_COUNT) this->logger.log(1,"局面数超出搜索限制");
-	return ans;
 }
-act_score_t Search::search_dfs(int stack_ind, int last_layer, const act_score_t& curr_val) {
-	act_score_t ans = ACT_SCORE_NULL;
-	const bool max_layer = (this->dfs_stack[stack_ind].current_player() == this->camp);
-	// printf("outer: dfs%5d turn:%d dep:%d snkid:%d\n",this->search_cnt,this->dfs_stack[stack_ind].current_round(),stack_ind,this->dfs_stack[stack_ind]._current_snake_id);
-	// if(this->search_cnt % 5 == 0) this->logger.log(0,"dfs%5d dep:%d snkid:%d",this->search_cnt,stack_ind,this->dfs_stack[stack_ind]._current_snake_id);
+void Search::search_bfs() {
+	bool max_layer = false;
+	if(this->ctx0.find_snake(this->ctx0._current_snake_id).camp == this->camp) max_layer = true;
+	this->node_list.push_back(search_node({ctx0,ACT_SCORE_NULL,-1,-1,0,0,max_layer}));
+	this->search_qu.push(0);
 
-	assert(this->dfs_stack[stack_ind].current_round() <= this->end_turn);
-	for(int i = 1; i <= this->act_maxv; i++) {
-		if(this->dfs_stack.size() == stack_ind+1) this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
-		else {
-			while(this->dfs_stack.size() > stack_ind+1) this->dfs_stack.pop_back();
-			this->dfs_stack.push_back(this->dfs_stack[stack_ind]);
+	while(!this->search_qu.empty()) {
+		// this->logger.log(0,"pre_pop");
+		int now = this->search_qu.front();
+		this->search_qu.pop();
+		// this->logger.log(0,"post_pop");
+		this->logger.flush();
+
+		// this->logger.log(0,"pre_assert");
+		assert(this->node_list[now].ctx.current_round() <= this->end_turn);
+		this->search_cnt++;
+		// if(this->search_cnt % 10 == 0) this->logger.log(0,"now at : [%d],fa:%d curr_round:%d lst:%d curr_snk:%d",now,this->node_list[now].fa,this->node_list[now].ctx.current_round(),this->node_list[now].last_step,this->node_list[now].ctx._current_snake_id);
+		// this->logger.log(0,"post_assert");
+		// this->logger.flush();
+
+		//检查终止条件
+		// this->logger.log(0,"pre_check");
+		bool end = false;
+		if(this->node_list[now].ctx.current_round() == this->end_turn && this->node_list[now].ctx._current_snake_id == this->snkid) end = true;//到时间结束
+		if(!this->node_list[now].ctx.inlist(this->snkid)) end = true;//蛇死
+		if(this->search_cnt >= this->MAX_SEARCH_COUNT) end = true;//局面超限
+		if(end) {//不再扩展
+			const double score = (*this->value_func)(this->ctx0,this->node_list[now].ctx,this->snkid);
+			this->update_value(act_score_t({this->node_list[now].last_step,score}),this->node_list[now].fa);
+			// this->logger.log(0,"check_returned");
+			continue;
 		}
-		
-		if(this->dfs_stack[stack_ind+1].do_operation(Operation({i}))) {
-			// printf("inner: dfs%5d turn:%d->%d dep:%d snkid:%d op:%d\n",this->search_cnt,this->dfs_stack[stack_ind].current_round(),this->dfs_stack[stack_ind+1].current_round(),stack_ind,this->dfs_stack[stack_ind+1]._current_snake_id,i);
-			this->search_cnt++;
-			bool end = false;
-			if(this->dfs_stack[stack_ind].current_round() == this->end_turn && this->dfs_stack[stack_ind]._current_snake_id == this->snkid) end = true;//到时间结束
-			if(!this->dfs_stack[stack_ind+1].inlist(this->snkid)) end = true;//蛇死
-			if(this->search_cnt >= this->MAX_SEARCH_COUNT) end = true;//局面超限
-			if(end) {//不再扩展
-				const double score = (*this->value_func)(this->ctx0,this->dfs_stack[stack_ind+1],this->snkid);
-				ans = this->search_comp(ans,act_score_t({i,score}),max_layer);
-				if(stack_ind == 0) this->search_vals[i-1].val = score;//可以直接赋值，因为更新机会只有这一个
+		// this->logger.log(0,"post_check");
+		// this->logger.flush();
+		//剪枝
+		//？
+
+		//开始扩展
+		// this->logger.log(0,"pre_extend");
+		// this->logger.flush();
+		for(int i = 0; i < this->act_maxv; i++) {
+			// this->logger.log(0,"pre_check");
+			// this->logger.flush();
+			if(!this->node_list[now].ctx.check_operation(i+1)) continue;
+			// this->logger.log(0,"post_check");
+			// this->logger.flush();
+
+			//先初始化ctx
+			// this->logger.log(0,"init:%d last:%d",this->node_list.size()-1,i);
+			this->node_list.push_back(search_node({this->node_list[now].ctx,ACT_SCORE_NULL,i,now,0,0,false}));
+			// this->logger.log(0,"pre_op");
+			// this->logger.flush();
+			this->node_list.back().ctx.do_operation(Operation({i+1}));
+			// this->logger.log(0,"aft_op");
+			// this->logger.flush();
+			
+			//如果撞死了,直接返回
+			if(!this->node_list.back().ctx.inlist(this->snkid)) {
+				const double score = (*this->value_func)(this->ctx0,this->node_list.back().ctx,this->snkid);
+				this->update_value(act_score_t({i,score}),now);
 				continue;
 			}
-			
-			while(!this->snk_simu_type[this->dfs_stack[stack_ind+1]._current_snake_id]) this->dfs_stack[stack_ind+1].skip_operation();
 
-			const double score = this->search_dfs(stack_ind+1,int(max_layer),ans).val;
-			ans = this->search_comp(ans,act_score_t({i,score}),max_layer);
-			if(stack_ind == 0) this->search_vals[i-1].val = score;
-		}
-		//剪枝
-		if(curr_val != ACT_SCORE_NULL && ans != ACT_SCORE_NULL) {
-			if(last_layer == 1 && (!max_layer) && curr_val.val >= ans.val) break;
-			if(last_layer == 0 && max_layer && curr_val.val <= ans.val) break;
-		}
-		
-	}
-	return ans;
-}
-act_score_t Search::search_comp(const act_score_t &a, const act_score_t &b, bool max_layer) {
-	if(a == ACT_SCORE_NULL) return b;
-	if(b == ACT_SCORE_NULL) return a;
-	if(max_layer) {
-		if(a.val >= b.val) return a;
-		else return b;
-	} else {
-		if(a.val <= b.val) return a;
-		else return b;
-	}
-}
 
+			// this->logger.log(0,"pre_skip");
+			// this->logger.flush();
+			while(!this->snk_simu_type[this->node_list.back().ctx._current_snake_id] && this->node_list.back().ctx.inlist(this->snkid)) {
+				this->node_list.back().ctx.skip_operation();
+				// this->logger.log(0,"skipped to:%d",this->node_list.back().ctx._current_snake_id);
+			}
+			// this->logger.log(0,"post_skip");
+			// this->logger.flush();
+
+			//再初始化max_layer
+			// this->logger.log(0,"pre_init");
+			// this->logger.flush();
+			if(this->node_list.back().ctx.find_snake(this->node_list.back().ctx._current_snake_id).camp == this->camp) this->node_list.back().max_layer = true;
+			// this->logger.log(0,"post_init");
+			// this->logger.flush();
+
+			// this->logger.log(0,"pushed:%d",this->node_list.size()-1);
+			// this->search_cnt++;
+			this->search_qu.push(this->node_list.size()-1);
+			this->node_list[now].childs++;
+		}
+		// this->logger.log(0,"post_extend");
+		// this->logger.flush();
+
+	}
+}
+void Search::update_value(const act_score_t& best, int fa) {
+	assert(best != ACT_SCORE_NULL);
+
+	search_node& tgt = this->node_list[fa];
+	if(tgt.best == ACT_SCORE_NULL) tgt.best = best;
+	else if(tgt.max_layer && best.val > tgt.best.val) tgt.best = best;
+	else if(!tgt.max_layer && best.val < tgt.best.val) tgt.best = best;
+
+	tgt.returned++;
+	if(tgt.returned == tgt.childs && tgt.fa != -1) this->update_value(act_score_t({tgt.last_step,tgt.best.val}), tgt.fa);
+}
 
 //Ai类
 bool vis[MAP_LENGTH][MAP_LENGTH];
@@ -868,7 +916,6 @@ void AI::distribute_tgt() {
 		else this->y_wall_alloc[best_alloc.pos.y] = snk.id;
 
 		this->target_list[snk.id] = target({2,this->turn});
-
 	}
 }
 bool AI::try_split() {
@@ -1152,49 +1199,26 @@ void Assess::mixed_search() {
 	for(auto it = this->ctx.my_snakes().begin(); it != this->ctx.my_snakes().end(); it++) {
 		if(it->id == this->snkid) continue;
 		const int dst = this->get_adjcent_dis(this->pos.x,this->pos.y,it->id);
-		// this->logger.log(0,"dst to %d : %d",it->id,dst);
 		if(dst != -1 && dst <= this->MIXED_SEARCH_SNK_DIS_THRESH[1]-1) snk_list.push_back(it->id);
 	}
 	for(auto it = this->ctx.opponents_snakes().begin(); it != this->ctx.opponents_snakes().end(); it++) {
 		const int dst = this->get_adjcent_dis(this->pos.x,this->pos.y,it->id);
-		// this->logger.log(0,"dst to %d : %d",it->id,dst);
 		if(dst != -1 && dst <= this->MIXED_SEARCH_SNK_DIS_THRESH[0]-1) snk_list.push_back(it->id);
 	}
 
 	// this->logger.log(0,"搜索范围内有%d条蛇,深度为%d",snk_list.size(),MIXED_SEARCH_DEPTH[snk_list.size()]);
 	
-	Search search(this->ctx,this->logger,snk_list,this->snkid,0);
+	Search search(this->ctx,this->logger,snk_list,this->snkid);
 
 	int depth = MIXED_SEARCH_DEPTH[snk_list.size()];
 	if(this->ai.target_list[this->snkid].type == 1) search.setup_search(depth,this->attack_val_func,4);
 	else search.setup_search(depth,this->mixed_val_func,4);
 	search.search();
 
-	const act_score_t* ans = search.search_vals;//更新结果
+	const act_score_t* ans = search.results;//更新结果
 	for(int i = 0; i < ACT_MAXV; i++) this->search_score[i] = ans[i].val;
 	for(int i = 0; i < ACT_LEN; i++) if(ans[i].val > -900) this->mixed_score[i] += ans[i].val * this->MIXED_SEARCH_WEIGHT;
 	this->logger.log(0,"dep:%d search_val:[%.1f,%.1f,%.1f,%.1f]",depth,ans[0].val,ans[1].val,ans[2].val,ans[3].val);
-
-	// int tot_search = 0;
-	// int depth = MIXED_SEARCH_DEPTH[snk_list.size()];
-	// while(true) {
-	// 	Search search(this->ctx,this->logger,snk_list,this->snkid,tot_search);
-
-	// 	if(this->ai.target_list[this->snkid].type == 1) search.setup_search(depth,this->attack_val_func,4);
-	// 	else search.setup_search(depth,this->mixed_val_func,4);
-	// 	search.search();
-
-	// 	tot_search = search.search_cnt;
-	// 	if(tot_search < 4000 && depth < 10 && snk_list.size() < 2) {//迭代加深
-	// 		depth++;
-	// 		continue;
-	// 	}
-		
-	// 	const act_score_t* ans = search.search_vals;//更新结果
-	// 	for(int i = 0; i < ACT_LEN; i++) if(ans[i].val > -900) this->mixed_score[i] += ans[i].val * this->MIXED_SEARCH_WEIGHT;
-	// 	this->logger.log(0,"最终dep:%d search_val:[%.1f,%.1f,%.1f,%.1f]",depth,ans[0].val,ans[1].val,ans[2].val,ans[3].val);
-	// 	break;
-	// }
 }
 double Assess::mixed_val_func(const Context& begin, const Context& end, int snkid) {
 	double ans = 0;
@@ -1496,7 +1520,7 @@ double Assess::DIR_ASSESS_GO_SAFE(int ind, bool directed, const mix_score_t& sco
 	return ans;
 }
 double Assess::DIR_ASSESS_KL(int ind, bool directed, const mix_score_t& scores) {
-	double ans = scores.polite_score * 0.5 + scores.search_score + scores.attack_score + scores.safe_score * 0.5;
+	double ans = scores.polite_score * 0.5 + scores.search_score*2 + scores.attack_score + scores.safe_score * 0.5;
 	if(directed) ans += 9;
 	return ans;
 }

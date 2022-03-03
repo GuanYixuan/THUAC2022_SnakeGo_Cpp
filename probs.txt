@@ -1,7 +1,7 @@
 目前bug：
 	
 关注点：
-	奇怪（过近）的dist_map值
+	
 增长点：
 	圈地行为
 	堵蛇行为（两格小蛇）
@@ -23,12 +23,12 @@
 		安全分的响应不尽合理（暂时修了bug）
 		kill-1的机会优先级高于食物
 		“八向法”检验蛇的可行空间
-		局部搜应该有比较明显的bug
 		
 		融墙任务的去重只能精确到一行/一列
 		融墙任务的“走到pos然后转弯”非常不优美...
 		
 		暂时并没有“超过吃的分裂”，开局可能不利
+		搜索中对蛇尾的忽略造成了大问题
 历史bug：
 	calc_snk_air取pos时取了this->pos
 	Search中push和pop的下标不同于设想的
@@ -58,7 +58,7 @@ cd "D:\Special Project\Snake\ai\old_vers\Not Loaded"
 main.exe 127.0.0.1 54321
 cpp_22022701.exe 127.0.0.1 54321
 
-judger_cli --port 54321 --playerCount 2  --logicPath "D:\\Special Project\\Snake\\local-judger\\main.exe" --output "%s"
+judger_cli --port 54321 --playerCount 2  --logicPath "D:\Special Project\Snake\local-judger\main.exe" --output "D:\Special Project\Snake\local-judger\temp"
 
 第一轮
 冰封之刃 v7 f9a899c23a7e4be9971351672a0229b0	0：40	ended	2:18
@@ -67,11 +67,3 @@ ADK不用 v20	ac2a9b9fbbf44a739e2d0e49ff0a29b2	29：11	ended	17:5
 
 第二轮
 冰封之刃 v7 f9a899c23a7e4be9971351672a0229b0	4：26
-
-助教老师们好！
-
-由计算机系科协举办的第26届智能体大赛正在进行，而发布在酒井科协公众号的宣传文章中有关于“课程加分”的内容，其中就包括了“数据结构 邓俊辉”。由此想请问一下该课程是否会（或更主观地说，是否能够）按照文章中所写的标准，依照比赛名次进行对应的加分？
-
-我也于22日下课后向邓老师提出了这个问题，他表示我需要在网络学堂上咨询助教老师们，并且他也“需要与助教们讨论一下”。（所以我来这里发这个问题了）
-
-感谢助教老师们的回答！

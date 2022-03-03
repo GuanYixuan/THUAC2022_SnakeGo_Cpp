@@ -249,6 +249,11 @@ private:
 /*   Game Logic Begins   */
 
 // Game setting
+#define MAP_LENGTH 16
+const int ACT_LEN = 4;
+const int ACT_MAXV = 6;
+const int ACT[4][2] = {{1,0},{0,1},{-1,0},{0,-1}};
+
 const static int GROWING_ROUNDS = 8;
 const static int ITEM_EXPIRE_LIMIT = 16;
 const static int SNAKE_LIMIT = 4;
@@ -304,7 +309,7 @@ struct Coord
 	}
 };
 const Coord NULL_COORD {-1, -1};
-
+const Coord ACT_CRD[4] = {Coord({1,0}),Coord({0,1}),Coord({-1,0}),Coord({0,-1})};
 
 struct Snake
 {
@@ -354,6 +359,9 @@ public:
 	//计算目前总墙数，返回[0号玩家，1号玩家]
 	std::pair<int,int> calc_wall() const;
 
+	//检查是否能进行操作actid，actid与Operation的编号统一
+	bool check_operation(int actid) const;
+
 	const std::vector<Snake>& my_snakes() const;
 	std::vector<Snake>& my_snakes();
 	const std::vector<int>& tmp_my_snakes() const;
@@ -390,16 +398,18 @@ private:
 
 	// Helper functions
 	Snake& current_snake();
+	const Snake& current_snake() const;
 	bool move_snake( const Operation& op );
 
 	void remove_snake( int snake_id );
 	void flood_fill( TwoDimArray<int>& map, int x, int y, int v, bool dir_ok[]) const;
 	void seal_region();
 
-	bool fire_railgun();
-	bool split_snake();
+	bool fire_railgun(bool check_only = false);
+	bool split_snake(bool check_only = false);
 	bool find_next_snake();
 	bool round_preprocess();
+
 };
 
 inline Context::Context( int length, int width, int max_round, std::vector<Item>&& item_list ): 
@@ -485,6 +495,27 @@ std::pair<int,int> Context::calc_wall() const {
 	}
 	return ans;
 }
+inline bool Context::check_operation(int actid) const {
+	const Snake& snake = current_snake();
+	if(actid == 5) {
+		if ( snake.railgun_item.id < 0 ) return false;
+		if ( snake.coord_list.size() < 2 ) return false;
+		return true;
+	} else if(actid == 6) {
+		if ( my_snakes().size() == SNAKE_LIMIT ) return false;
+		if ( snake.coord_list.size() < 2 ) return false;
+		return true;
+	}
+	else if(actid >= 1 && actid <= 4) {
+		if(snake.length() < 2) return true;
+
+		//也许写成this->_current_round == 2也是可以的
+		if((snake.length() > 2) || (snake.length() == 2 && (snake.length_bank > 0 || this->_current_round < GROWING_ROUNDS)))
+			if(snake[0] + ACT_CRD[actid-1] == snake[1]) return false;
+		return true;
+	}
+	assert(false);
+}
 inline bool Context::do_operation( const Operation& op ) {
 	if ( op.type == 5 ) {
 		if (!fire_railgun()) return false;
@@ -502,6 +533,11 @@ bool Context::skip_operation() {
 
 inline Snake& Context::current_snake()
 {
+	auto& sl = my_snakes();
+	return *std::find_if( std::begin( sl ), std::end( sl ),
+						  [&]( const Snake& s ) { return s.id == _current_snake_id; } );
+}
+inline const Snake& Context::current_snake() const {
 	auto& sl = my_snakes();
 	return *std::find_if( std::begin( sl ), std::end( sl ),
 						  [&]( const Snake& s ) { return s.id == _current_snake_id; } );
@@ -663,13 +699,12 @@ inline void Context::seal_region()
 	}
 }
 
-inline bool Context::fire_railgun()
+inline bool Context::fire_railgun(bool check_only)
 {
 	auto& snake = current_snake();
-	if ( snake.railgun_item.id < 0 )
-		return false;
-	if ( snake.coord_list.size() < 2 )
-		return false;
+	if ( snake.railgun_item.id < 0 ) return false;
+	if ( snake.coord_list.size() < 2 ) return false;
+	if(check_only) return true;
 
 	const auto& cl = snake.coord_list;
 	int cx = cl[0].x, cy = cl[0].y, dx = cl[0].x - cl[1].x, dy = cl[0].y - cl[1].y;
@@ -682,13 +717,12 @@ inline bool Context::fire_railgun()
 	snake.railgun_item = NULL_ITEM;
 	return true;
 }
-inline bool Context::split_snake()
+inline bool Context::split_snake(bool check_only)
 {
-	if ( my_snakes().size() == SNAKE_LIMIT )
-		return false;
+	if ( my_snakes().size() == SNAKE_LIMIT ) return false;
 	auto& snake = current_snake();
-	if ( snake.coord_list.size() < 2 )
-		return false;
+	if ( snake.coord_list.size() < 2 ) return false;
+	if(check_only) return true;
 
 	const auto& cl = snake.coord_list;
 	auto mid = ( cl.size() + 1 ) / 2;

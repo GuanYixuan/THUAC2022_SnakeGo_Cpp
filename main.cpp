@@ -6,7 +6,7 @@
 using namespace std;
 
 //Logger类
-const bool LOG_SWITCH = false;
+const bool LOG_SWITCH = true;
 const bool LOG_STDOUT = false;
 const int LOG_LEVEL = 0;
 class Logger {
@@ -64,9 +64,6 @@ struct shoot_alloc_t {
 	Coord pos;
 	int turn_dir;
 };
-// struct target_solid {
-
-// };
 struct target {
 	//-1=None,0=Item,1=k/l,2=shoot,3=solid
 	//每加一个type，都要在target::to_string和AI::release_target中提供支持
@@ -92,6 +89,12 @@ struct target_kl {
 	inline bool isnull() const { return this->tgt_id == -1; }
 	// inline bool need_waller() const {}
 };
+struct target_solid {
+	int snkid;
+	vector<Coord> pos_list;
+	int cover_size,dist,init_leng;
+	bool out_of_range;
+};
 const target NULL_TARGET {-1,-1};
 class Assess;
 class AI {
@@ -106,6 +109,7 @@ class AI {
 		map<int, int> item_addons;
 		map<int, target_kl> kl_addons;
 		map<int, shoot_alloc_t> shoot_addons;
+		map<int, target_solid> solid_addons;
 
 		void total_init();
 		void turn_control();
@@ -123,18 +127,23 @@ class AI {
 		int x_wall_alloc[MAP_LENGTH];
 		int y_wall_alloc[MAP_LENGTH];
 
+		//规划固化任务
+		void plan_solid();
+		void _check_solid_push(const target_solid& addon);
+		int do_solid();
+		vector<target_solid> solid_list;
+
 		//[总控函数]为所有蛇分配目标
 		//目前仅有食物目标（每回合自动刷新）
 		void distribute_tgt();
+		int do_eat();
 		//index是item/snake的id，val是该item/snake属于的蛇的id
 		int item_alloc[ALLOC_MAX];
 
+		//随缘任务
 		bool try_split();
 		bool try_shoot();
-		int do_eat();
 		int try_solid();
-		int do_solid();
-		bool find_solid(int type);
 
 		void release_target(int snkid = -1, bool silent = false);
 
@@ -285,6 +294,9 @@ class Assess {
 		//推算snkid沿当前方向继续走dist格所到达的坐标
 		//注意：该函数对长度为1的蛇返回NULL_COORD，若结果超出地图范围也将返回NULL_COORD
 		Coord trace_head_dir(int dist, int snkid = -1);
+		//检查从start到end的道路是否通畅，会忽略编号为snkid的蛇身
+		//注意：start至end间不能有转弯
+		bool check_path_clear(const Coord& start, const Coord& end, int snkid = -1);
 
 		//检查编号为first的蛇的下一次行动是否比编号为second的蛇先
 		//【这一判断基于目前正在行动的蛇的id（即self.snkid）作出】
@@ -589,8 +601,9 @@ void AI::turn_control() {
 	this->turn_init();
 	this->assess->do_turn_assess();
 
-	this->plan_shoot();
 	this->plan_kl();
+	this->plan_shoot();
+	this->plan_solid();
 	this->distribute_tgt();
 }
 void AI::turn_init() {
@@ -774,6 +787,82 @@ void AI::plan_shoot() {
 		}
 	}
 }
+void AI::plan_solid() {
+	//解除一些目标
+	for(const Snake& snk : this->ctx->my_snakes()) {
+		const target& tgt = this->target_list[snk.id];
+		if(tgt.type != 3) continue;
+
+		target_solid& addon =  this->solid_addons[this->snake->id];
+		if(this->snake->length() + this->snake->length_bank < addon.init_leng) {
+			this->logger.log(1,"身长缩短");
+			this->release_target(snk.id);
+			continue;
+		}
+		if(this->turn - tgt.time > addon.dist + 8) {
+			this->logger.log(1,"固化超时");
+			this->release_target(snk.id);
+			continue;
+		}
+	}
+
+	//开始计算
+	this->solid_list.clear();
+	for(const Snake& snk : this->ctx->my_snakes()) {
+		int leng = snk.length() + snk.length_bank;
+		if(leng < 10) continue;
+
+		int long_side = (leng+5) / 4;
+		int short_side = (leng+3) / 4;
+		if(long_side == short_side) short_side--;
+		else long_side--;
+		const Coord&& dire = snk[0] - snk[1];
+		const Coord&& verti = dire.get_verti();
+
+		// int straight = 2;
+		// for( ; straight < this->snake->length(); straight++) if((*this->snake)[straight].x != snk[0].x + straight*dire.x || (*this->snake)[straight].y != pos0.y + straight*dire.y) break;
+
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]+verti*(short_side-1),snk[0]+verti*(short_side-1)-dire*(long_side-1),snk[0]-dire*(long_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]-verti*(short_side-1),snk[0]-verti*(short_side-1)-dire*(long_side-1),snk[0]-dire*(long_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]+verti*(long_side-1),snk[0]+verti*(long_side-1)-dire*(short_side-1),snk[0]-dire*(short_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]-verti*(long_side-1),snk[0]-verti*(long_side-1)-dire*(short_side-1),snk[0]-dire*(short_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]+verti*(short_side-1),snk[0]+verti*(short_side-1)+dire*(long_side-1),snk[0]+dire*(long_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]-verti*(short_side-1),snk[0]-verti*(short_side-1)+dire*(long_side-1),snk[0]+dire*(long_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]+verti*(long_side-1),snk[0]+verti*(long_side-1)+dire*(short_side-1),snk[0]+dire*(short_side-1)}),-1,-1,leng,false}));
+		this->_check_solid_push(target_solid({snk.id,vector<Coord>({snk[0]-verti*(long_side-1),snk[0]-verti*(long_side-1)+dire*(short_side-1),snk[0]+dire*(short_side-1)}),-1,-1,leng,false}));
+	}
+}
+void AI::_check_solid_push(const target_solid& addon) {
+	for(const Coord& next : addon.pos_list) if(next.x < 0 || next.y < 0 || next.x >= MAP_LENGTH || next.y >= MAP_LENGTH) return;
+	// this->logger.log(0,"checking for snake %d : %s %s %s",addon.snkid,addon.pos_list[0].to_string().c_str(),addon.pos_list[1].to_string().c_str(),addon.pos_list[2].to_string().c_str());
+
+	Coord now = this->ctx->find_snake(addon.snkid)[0];
+	for(const Coord& next : addon.pos_list) {
+		if(!this->assess->check_path_clear(now,next,addon.snkid)) return;
+		now = next;
+	}
+	// this->logger.log(0,"path cleared for snake %d",addon.snkid);
+
+	int dist = 1;
+	bool ended = false;
+	now = this->ctx->find_snake(addon.snkid)[0];
+	for(const Coord& next : addon.pos_list) {
+		int dis = now.get_block_dist(next);
+		const Coord dire = Coord({(next.x-now.x)/dis,(next.y-now.y)/dis});
+		for(Coord tmp = now + dire; tmp != next + dire; tmp = tmp + dire) {
+			if(this->ctx->snake_map()[tmp.x][tmp.y] == addon.snkid && this->assess->get_pos_on_snake(tmp) + this->ctx->find_snake(addon.snkid).length_bank > dist) {
+				ended = true;
+				break;
+			}
+			dist++;
+		}
+		if(ended) break;
+		now = next;
+	}
+	this->logger.log(0,"check passed for snake %d",addon.snkid);
+	this->solid_list.push_back(addon);
+	this->solid_list.back().dist = dist;
+}
 void AI::distribute_tgt() {
 	//清除食物类目标
 	for(int i = 0; i < ALLOC_MAX; i++) this->item_alloc[i] = -1;
@@ -830,31 +919,6 @@ void AI::distribute_tgt() {
 		this->target_list[it->snkid] = target({0,this->turn});
 	}
 
-	// //没分配到食物目标
-	// int solid_cnt = 0;
-	// for(const Snake& snk : this->ctx->my_snakes()) if(this->target_list[snk.id].type == 3) solid_cnt++;
-	// pii&& walls = this->ctx->calc_wall();
-	// pii&& lengs = this->ctx->calc_snake_leng();
-	// int obstacles = walls.first + walls.second + lengs.first + lengs.second;
-
-	// for(const Snake& snk : this->ctx->my_snakes()) {
-	// 	if(!this->target_list[snk.id].isnull()) continue;
-	// 	if(solid_cnt >= 2 || this->ctx->my_snakes().size() <= 3) break;
-
-	// 	double score = snk.length() + snk.length_bank;//考虑体长
-	// 	if(obstacles > 105) score += 3;//考虑拥挤程度
-	// 	else if(obstacles > 95) score += 2;
-	// 	else if(obstacles > 85) score += 1;
-	// 	else if(obstacles < 50) score -= 3;
-	// 	else if(obstacles < 60) score -= 1;
-		
-	// 	if(score > 10) {
-	// 		this->logger.log(1,"目标分配(solid):蛇%2d",snk.id);
-	// 		this->target_list[snk.id] = target({3,this->turn,NULL_ITEM,NULL_KL_ADDON});
-	// 	}
-	// 	solid_cnt++;
-	// }
-
 	//进攻区段
 	int attack_cnt = 0;
 	for(const Snake& snk : this->ctx->my_snakes()) if(this->target_list[snk.id].type == 1 || this->target_list[snk.id].type == 2) attack_cnt++;
@@ -900,6 +964,27 @@ void AI::distribute_tgt() {
 		else this->y_wall_alloc[best_alloc.pos.y] = snk.id;
 
 		this->target_list[snk.id] = target({2,this->turn});
+	}
+
+	// 固化区段
+	int solid_cnt = 0;
+	for(const Snake& snk : this->ctx->my_snakes()) if(this->target_list[snk.id].type == 3) solid_cnt++;
+	for(const target_solid& sol : this->solid_list) {
+		const Snake& snk = this->ctx->find_snake(sol.snkid);
+		if(!this->target_list[snk.id].isnull()) continue;
+		if(solid_cnt >= 2 || this->ctx->my_snakes().size() <= 3) break;
+
+	// 	double score = snk.length() + snk.length_bank;//考虑体长
+	// 	if(obstacles > 105) score += 3;//考虑拥挤程度
+	// 	else if(obstacles > 95) score += 2;
+	// 	else if(obstacles > 85) score += 1;
+	// 	else if(obstacles < 50) score -= 3;
+	// 	else if(obstacles < 60) score -= 1;
+		
+		this->logger.log(1,"目标分配(solid):蛇%2d",snk.id);
+		this->target_list[snk.id] = target({3,this->turn});
+		this->solid_addons[snk.id] = sol;
+		solid_cnt++;
 	}
 }
 bool AI::try_split() {
@@ -989,37 +1074,75 @@ int AI::do_eat() {
 	return this->assess->find_path(Coord({item.x,item.y}));
 }
 int AI::do_solid() {
-	//小于13格长，则直接追求1:1
-	this->logger.log(1,"执行固化任务");
+	target_solid& sol = this->solid_addons[this->snake->id];
 
-	if(this->snake->length() <= 4) {
-		this->logger.log(1,"放弃固化");
-		this->target_list[this->snake->id] = NULL_TARGET;
-		return this->assess->random_step();
+	this->logger.log(1,"执行固化任务 -> %s",sol.pos_list[0].to_string().c_str());
+
+	int dis = this->snake->coord_list[0].get_block_dist(sol.pos_list[0]);
+	if(dis != (this->snake->coord_list[0] - sol.pos_list[0]).get_leng() && !sol.out_of_range) {
+		this->logger.log(1,"放弃目标点%s",sol.pos_list[0].to_string().c_str());
+		sol.pos_list.erase(sol.pos_list.begin());
+		sol.out_of_range = true;
+
+		if(sol.pos_list.size() == 0) {//万一所有目标都丢空了，直接设定目标
+			int best_val = -1;
+			Coord best_pos;
+			for(int i = 3; i < this->snake->coord_list.size(); i++) {
+				const Coord& now = this->snake->coord_list[i];
+				const int exp_time = this->snake->coord_list.size()-i+this->snake->length_bank;//末尾是1
+				if(this->assess->get_adjcent_dis(now.x,now.y,this->snake->id)+1 < exp_time) {
+					if(i+1 > best_val) {
+						best_val = i+1;
+						best_pos = now;
+					}
+				}
+			}
+			if(best_val == -1) {//可见未来包不起来,暂时放弃
+				this->logger.log(1,"放弃固化");
+				this->release_target(this->snake->id);
+				return this->assess->go_safe();
+			}
+			this->logger.log(1,"强制设定新目标%s",best_pos.to_string().c_str());
+			sol.pos_list.push_back(best_pos);
+		}
+	} else if(dis == 0) {//下一个目标点
+		sol.pos_list.erase(sol.pos_list.begin());
+		sol.out_of_range = false;
 	}
 
-	//设定目标
-	int long_side = (this->snake->length()+5) / 4;
-	int short_side = (this->snake->length()+3) / 4;
+	const Coord& tgt = sol.pos_list[0];
+	if(this->assess->get_adjcent_dis(tgt.x,tgt.y,this->snake->id) == 0 && sol.pos_list.size() == 1) {
+		const pii&& best = this->assess->get_enclosing_area();
+		if(best.first != -1) return best.second;
 
-	//观察已有的直线部分(是下标0到straight-1)
-	int straight = 2;
-	const Coord &pos0 = (*this->snake)[0], &pos1 = (*this->snake)[1];
-	const Coord&& dire = pos1 - pos0;//反蛇头方向的dire
-	const Coord&& verti = dire.get_verti();
-	for( ; straight < this->snake->length(); straight++) if((*this->snake)[straight].x != pos0.x + straight*dire.x || (*this->snake)[straight].y != pos0.y + straight*dire.y) break;
+		this->logger.log(1,"围合失败");
+		this->release_target(this->snake->id);
+		return this->assess->go_safe();
 
-	if(straight >= long_side) {//现有直线超过长边，尝试直接转弯
-		Coord check_pos = pos0;
+		// sol.out_of_range = true;
+		// if(sol.pos_list.size() == 0) {//万一所有目标都丢空了，直接设定目标
+		// 	int best_val = -1;
+		// 	Coord best_pos;
+		// 	for(int i = 3; i < this->snake->coord_list.size(); i++) {
+		// 		const Coord& now = this->snake->coord_list[i];
+		// 		const int exp_time = this->snake->coord_list.size()-i+this->snake->length_bank;//末尾是1
+		// 		if(this->assess->get_adjcent_dis(now.x,now.y,this->snake->id)+1 < exp_time) {
+		// 			if(i+1 > best_val) {
+		// 				best_val = i+1;
+		// 				best_pos = now;
+		// 			}
+		// 		}
+		// 	}
+		// 	if(best_val == -1) {//可见未来包不起来,暂时放弃
+		// 		this->logger.log(1,"放弃固化");
+		// 		this->release_target(this->snake->id);
+		// 		return this->assess->go_safe();
+		// 	}
+		// 	this->logger.log(1,"强制设定新目标%s",best_pos.to_string().c_str());
+		// 	sol.pos_list.push_back(best_pos);
+		// }
 	}
-
-
-	
-	// int dis = this->assess->get_adjcent_dis(best_pos.x,best_pos.y,this->snake->id);
-	// if(dis < 1 && dis != -1) return this->assess->get_enclosing_area().second;//最后一步!
-	// return this->assess->find_path(best_pos,this->assess->DIR_ASSESS_SOLID);
-}
-bool AI::find_solid(int type) {
+	return this->assess->find_path(tgt,this->assess->DIR_ASSESS_SOLID);
 
 }
 int AI::do_kl() {
@@ -1071,6 +1194,10 @@ void AI::release_target(int snkid, bool silent) {
 		if(addon.turn_dir % 2) this->x_wall_alloc[addon.pos.x] = -1;
 		else this->y_wall_alloc[addon.pos.y] = -1;
 		this->shoot_addons.erase(snkid);
+	} else if(type == 3) {
+		assert(this->solid_addons.count(snkid));
+		if(!silent) this->logger.log(1,"蛇%d放弃固化",snkid);
+		this->solid_addons.erase(snkid);
 	} else {
 		printf("error type %d\n",type);
 		assert(false);
@@ -1491,7 +1618,7 @@ double Assess::DIR_ASSESS_REGULAR(int ind, bool directed, const mix_score_t& sco
 }
 double Assess::DIR_ASSESS_SOLID(int ind, bool directed, const mix_score_t& scores) {
 	double ans = scores.polite_score + scores.search_score + scores.safe_score * 0.5;
-	if(directed) ans += 15;
+	if(directed) ans += 12;
 	return ans;
 }
 double Assess::DIR_ASSESS_GO_SAFE(int ind, bool directed, const mix_score_t& scores) {
@@ -1675,6 +1802,17 @@ Coord Assess::trace_head_dir(int dist, int snkid) {
 	const Coord ans = Coord({pos0.x+dist*dire.x,pos0.y+dist*dire.y});
 	if(ans.x < 0 || ans.y < 0 || ans.x >= this->x_leng || ans.y >= this->y_leng) return NULL_COORD;
 	return ans;
+}
+bool Assess::check_path_clear(const Coord& start, const Coord& end, int snkid) {
+	int dis = start.get_block_dist(end);
+	assert(dis == (start-end).get_leng() && dis > 0);
+
+	const Coord dire = Coord({(end.x-start.x)/dis,(end.y-start.y)/dis});
+	for(Coord now = start; now != end+dire; now = now + dire) {
+		if(this->ctx.wall_map()[now.x][now.y] != -1) return false;
+		if(this->ctx.snake_map()[now.x][now.y] != -1 && this->ctx.snake_map()[now.x][now.y] != snkid) return false;
+	}
+	return true;
 }
 bool Assess::check_first(int first, int second) {
 	bool found_now = false;

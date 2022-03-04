@@ -283,6 +283,7 @@ struct Coord
 	inline bool operator!=( const Coord& b ) const { return !( *this == b ); }
 	inline Coord operator+(const Coord& b) const {return Coord({x+b.x,y+b.y}); }
 	inline Coord operator-(const Coord& b) const { return Coord({x-b.x,y-b.y}); }
+	inline Coord operator*(int k) const { return Coord({k*this->x,k*this->y}); }
 	inline int operator*(const Coord& b) const { return this->x*b.x + this->y*b.y; }
 	double get_leng() const { return std::sqrt((x*x)+(y*y)); }
 	int get_block_dist(const Coord& b) const { return abs(this->x-b.x) + abs(this->y-b.y); }

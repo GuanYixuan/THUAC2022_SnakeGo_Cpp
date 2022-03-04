@@ -377,6 +377,7 @@ public:
 	int _current_snake_id, _next_snake_id;
 
 	Snake& current_snake();
+	const Snake& current_snake() const;
 
 private:
 	PROPERTY( int, length );
@@ -401,7 +402,6 @@ private:
 	int _skipped_length[2] = {0,0};
 
 	// Helper functions
-	const Snake& current_snake() const;
 	bool move_snake( const Operation& op );
 
 	void remove_snake( int snake_id );

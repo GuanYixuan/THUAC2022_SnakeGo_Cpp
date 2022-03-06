@@ -291,6 +291,7 @@ struct Coord
 	Coord get_verti() const {
 		if(this->x == 0 && this->y != 0) return Coord({1,0});
 		if(this->y == 0 && this->x != 0) return Coord({0,1});
+		printf("exception occurred as x=%d y=%d",this->x,this->y);
 		assert(false);
 	}
 	Coord get_reverse() const { return Coord({-this->x,-this->y}); }

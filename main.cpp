@@ -7,7 +7,7 @@ using namespace std;
 
 //Logger类
 const bool LOG_SWITCH = true;
-const bool LOG_STDOUT = false;
+const bool LOG_STDOUT = true;
 const int LOG_LEVEL = 0;
 class Logger {
 	public:
@@ -117,6 +117,11 @@ class AI {
 		void turn_control();
 		void turn_init();
 		
+		int area_occupy_val[4];
+		bool area_occupy_snk[4];
+		bool area_alloc[4];
+		Coord safe_area_alloc[ALLOC_MAX];
+
 		void plan_dead_signal();
 		int do_dead_signal();
 		int do_command();
@@ -357,7 +362,6 @@ class Assess {
 		const int camp;
 		const int turn;
 
-		int area_occupy_val[4];
 
 		//mixed_search系列常数
 		constexpr static double MIXED_SEARCH_WEIGHT = 2.0;
@@ -621,7 +625,7 @@ int AI::judge(const Snake &snake, const Context &ctx) {
 	if(tgt_type == 4) return this->do_dead_signal()+1;
 	if(tgt_type == 5) return this->do_command() + 1;
 
-	if(this->try_shoot()) return 5;//任务分配
+	if(this->try_shoot()) return 5;
 
 	const int sol = this->try_solid();
 	if(sol != -1) return sol+1;
@@ -650,8 +654,8 @@ void AI::total_init() {
 	for(int i = 0; i < ALLOC_MAX; i++) this->dead_signal_alloc[i] = -1;
 }
 void AI::turn_control() {
-	this->turn_init();
 	this->assess->do_turn_assess();
+	this->turn_init();
 
 	this->plan_kl();
 	this->plan_shoot();
@@ -662,6 +666,48 @@ void AI::turn_control() {
 }
 void AI::turn_init() {
 	for(const Snake& snk : this->ctx->my_snakes()) if(!this->target_list.count(snk.id)) this->target_list[snk.id] = NULL_TARGET;//别搞得没target
+
+	//安全区相关计算
+	for(int i = 0; i < 4; i++) this->area_alloc[i] = this->area_occupy_snk[i] = this->area_occupy_val[i] = 0;
+	for(int x = 0; x < 16; x++) for(int y = 0; y < 16; y++) if(this->ctx->wall_map()[x][y] != -1) this->area_occupy_val[(x>=8)+2*(y>=8)]++;
+	for(int x = 0; x < 16; x++) for(int y = 0; y < 16; y++) if(this->ctx->snake_map()[x][y] != -1) this->area_occupy_val[(x>=8)+2*(y>=8)]++;
+	for(const Snake& snk : this->ctx->my_snakes()) {
+		this->safe_area_alloc[snk.id] = NULL_COORD;
+		this->area_occupy_val[(snk[0].x>=8)+2*(snk[0].y>=8)] += 4;
+		this->area_occupy_snk[(snk[0].x>=8)+2*(snk[0].y>=8)] = true;
+	}
+	for(const Snake& snk : this->ctx->opponents_snakes()) this->area_occupy_val[(snk[0].x>=8)+2*(snk[0].y>=8)] += 4;
+	for(int i = 0; i < 4; i++) {
+		if(this->area_occupy_val[i] > 19 || this->area_occupy_snk[i]) continue;
+		const Coord mid = Coord({(i&1) ? 12 : 4, (i&2) ? 12 : 4});
+
+		pii nearest = {-1,100};//(id,dis)
+		for(const Snake& snk : this->ctx->my_snakes()) {
+			if(snk.length() <= 5) continue;
+			int dis = this->assess->get_adjcent_dis(mid.x,mid.y,snk.id);
+			if(dis == -1) dis = this->assess->get_adjcent_dis(mid.x+1,mid.y+1,snk.id);
+			if(dis == -1) dis = this->assess->get_adjcent_dis(mid.x-1,mid.y-1,snk.id);
+			if(dis != -1 && nearest.second > dis) nearest = {snk.id,dis};
+		}
+		if(nearest.first != -1) {
+			this->area_alloc[i] = true;
+			this->safe_area_alloc[nearest.first] = mid;
+		}
+	}
+	for(const Snake& snk : this->ctx->my_snakes()) {
+		if(this->safe_area_alloc[snk.id] != NULL_COORD || snk.length() <= 5) continue;
+
+		int my_pos = (snk[0].x>=8) + 2*(snk[0].y>=8);
+		for(int i = 0; i < 4; i++) {
+			if((my_pos ^ i) >= 3 || this->area_alloc[i]) continue;//不相邻或已分配
+			//if(this->area_occupy_snk[i]) 那能不能有自己人呢?
+			if(this->area_occupy_val[my_pos] - this->area_occupy_val[i] >= 16) {
+				this->area_alloc[i] = true;
+				this->safe_area_alloc[snk.id] = Coord({(i&1) ? 12 : 4, (i&2) ? 12 : 4});
+			}
+		}
+		
+	}
 }
 void AI::plan_kl() {
 	//自动解除一些进攻目标
@@ -864,12 +910,10 @@ void AI::plan_solid() {
 	this->solid_list.clear();
 	for(const Snake& snk : this->ctx->my_snakes()) {
 		int leng = snk.length() + snk.length_bank;
-		if(leng < 10) continue;
+		if(snk.length() == 1 || leng < 10) continue;
 
 		int long_side = (leng+5) / 4;
 		int short_side = (leng+3) / 4;
-		if(long_side == short_side) short_side--;
-		else long_side--;
 		const Coord&& dire = snk[0] - snk[1];
 		const Coord&& verti = dire.get_verti();
 
@@ -920,16 +964,14 @@ void AI::_check_solid_push(const target_solid& addon) {
 void AI::plan_dead_signal() {
 	for(const Snake& snk : this->ctx->my_snakes()) {
 		if(this->target_list[snk.id].type != 4) continue;
-
 		const dead_signal& sig = this->dead_signal_addons[snk.id];
 		if(!this->ctx->inlist(sig.snkid)) {
 			this->logger.log(1,"救援目标消失");
 			this->release_target(snk.id);
 			continue;
 		}
-
 		pii&& best = this->assess->get_enclosing_leng(sig.snkid);
-		if(best.first >= 0.66*(sig.leng+sig.bank) || best.first >= this->snake->length()-3) {
+		if(best.first >= 0.66*(sig.leng+sig.bank) || best.first >= int(this->snake->length())-3) {
 			this->logger.log(1,"不再符合救援标准");
 			this->release_target(snk.id);
 			continue;
@@ -1018,6 +1060,18 @@ void AI::distribute_tgt() {
 	for(auto it = item_list.begin(); it != item_list.end(); it++) {
 		if(complete_cnt >= this->ctx->my_snakes().size()) break;
 		if(this->item_alloc[it->item.id] != -1 || this->target_list[it->snkid].type != -1) continue;
+
+		bool neared = false;
+		for(const Snake& snk : this->ctx->my_snakes()) {
+			if(this->target_list[snk.id].type != 0) continue;
+			const Item& ori_tgt = this->ctx->find_item(this->item_addons[snk.id]);
+			if(Coord({ori_tgt.x,ori_tgt.y}).get_block_dist(Coord({it->item.x,it->item.y})) <= 2) {
+				neared = true;
+				this->logger.log(0,"阻止临近分配:新目标%s",it->item.to_string().c_str());//难道Item的to_string不能两个连着用吗？
+				break;
+			}
+		}
+		if(neared) continue;
 
 		this->logger.log(1,"目标分配(item):蛇%2d -> %s 代价%.1f",it->snkid,it->item.to_string().c_str(),it->cost);
 		this->item_alloc[it->item.id] = it->snkid;
@@ -1158,26 +1212,31 @@ bool AI::try_shoot() {
 int AI::try_solid() {//固化策略:足够长+有些危险+蛇已4条+利用率较高
 	if(this->snake->length() < this->SOL_MIN_LENG || this->ctx->my_snakes().size() < 4) return -1;
 
+	const int leng = this->snake->length();
 	const pii&& best_sol = this->assess->get_enclosing_area();//利用率（前后期）
 	if(best_sol.first == -1) return -1;
-	if(best_sol.first >= this->SOL_HIGH_EFFI * this->snake->length()) {
+	if(best_sol.first >= this->SOL_HIGH_EFFI * leng) {
 		this->logger.log(1,"主动固化(高效)，利用%d格",best_sol.first);
+		this->release_target();
 		return best_sol.second;
 	}
-	if(best_sol.first >= this->SOL_IDLE_EFFI * this->snake->length() && this->target_list[this->snake->id].isnull()) {
+	if(best_sol.first >= this->SOL_IDLE_EFFI * leng && this->target_list[this->snake->id].isnull()) {
 		this->logger.log(1,"主动固化(空闲)，利用%d格",best_sol.first);
+		this->release_target();
 		return best_sol.second;
 	}
 	
 	double max_safe_score = -1000;
 	for(int i = 0; i < ACT_LEN; i++) max_safe_score = max(max_safe_score,this->assess->safe_score[i]);
-	if(best_sol.first >= this->SOL_DANG_EFFI * this->snake->length() && max_safe_score < this->SOL_SAFE_THRESH) {
+	if(best_sol.first >= this->SOL_DANG_EFFI * leng && max_safe_score < this->SOL_SAFE_THRESH) {
 		this->logger.log(1,"主动固化(危险)，利用%d格",best_sol.first);
+		this->release_target();
 		return best_sol.second;
 	}
 
-	if(this->assess->dead_signal && best_sol.first >= this->SOL_DYING_EFFI * this->snake->length()) {
+	if(this->assess->dead_signal && (best_sol.first >= this->SOL_DYING_EFFI * leng || best_sol.first >= leng - 2)) {
 		this->logger.log(1,"主动固化(濒死)，利用%d格",best_sol.first);
+		this->release_target();
 		return best_sol.second;
 	}
 	
@@ -1307,14 +1366,21 @@ int AI::do_shoot() {
 }
 int AI::do_dead_signal() {
 	this->logger.log(1,"执行牺牲任务");
-	this->release_target();
+	const dead_signal sig = this->dead_signal_addons[this->snake->id];
+	int tgt_id = sig.snkid;
 
-	int tgt_id = this->dead_signal_addons[this->snake->id].snkid;
+	this->release_target();
 	if(!this->ctx->inlist(tgt_id)) {
 		this->logger.log(1,"目标已消失");
 		return this->assess->go_safe();
 	}
+	
 	const pii&& best = this->assess->get_enclosing_area();
+	if(best.first >= 0.66*(sig.leng+sig.bank) || best.first >= int(this->snake->length())-3) {
+		this->logger.log(1,"不再符合救援标准");
+		return this->assess->go_safe();
+	}
+
 	int dead = this->assess->find_dead();
 	if(dead == -1) {
 		this->logger.log(1,"任务失败");
@@ -1347,6 +1413,7 @@ void AI::release_target(int snkid, bool silent) {
 	if(this->target_list[snkid].isnull()) return;
 
 	int type = this->target_list[snkid].type;
+	// this->logger.log(0,"abandon snkid:%d type:%d",snkid,type);
 	if(type == 0) {
 		assert(this->item_addons.count(snkid));
 		if(!silent) this->logger.log(1,"蛇%d放弃物品目标:%s",snkid,this->ctx->find_item(this->item_addons[snkid]).to_string().c_str());
@@ -1410,11 +1477,6 @@ turn(ctx.current_round())
 }
 void Assess::do_turn_assess() {
 	this->calc_spd_map();
-
-	//安全区相关计算
-	for(int i = 0; i < 4; i++) this->area_occupy_val[i] = 0;
-	for(int x = 0; x < 16; x++) for(int y = 0; y < 16; y++) if(this->ctx.wall_map()[x][y] != -1) this->area_occupy_val[(x>=8)+2*(y<8)]++;
-	for(int x = 0; x < 16; x++) for(int y = 0; y < 16; y++) if(this->ctx.snake_map()[x][y] != -1) this->area_occupy_val[(x>=8)+2*(y<8)]++;
 }
 void Assess::do_snake_assess() {
 	this->refresh_all_bfs();
@@ -1787,18 +1849,17 @@ int Assess::find_path(const Coord &tgt, double (*dir_assess)(int ind, bool direc
 	return bfs_list[0].actid;
 }
 int Assess::go_safe() {
-	int best = 0, now = (this->this_snake[0].x>=8) + 2*(this->this_snake[0].y<8);
-	for(int i = 1; i < 4; i++) if(this->area_occupy_val[i] < this->area_occupy_val[best]) best = i;
-	if(now == best) return this->random_step();
+	this->logger.log(1,"尝试疏散");
 
-	this->logger.log(1,"走向安全区%d",best);
-	this->area_occupy_val[best] += max(10ull,min(20ull,this->this_snake.length() + this->this_snake.length_bank));
-	for(int x = 0; x < 16; x++) 
-		for(int y = 0; y < 16; y++) 
-			if((x>=8)+2*(y<8) == best && (*this->dist_map[this->snkid])[x][y] != -1) return this->find_path(Coord({x,y}),this->DIR_ASSESS_GO_SAFE);
-	
-	//估计是路都被堵住了...
-	return this->random_step();
+	const Coord& tgt = this->ai.safe_area_alloc[this->snkid];
+	if(tgt == NULL_COORD) {
+		if(this->this_snake.length() > 5) this->logger.log(1,"未分配到安全区");
+		else this->logger.log(1,"长度过短,不分配安全区");
+		return this->random_step();
+	}
+
+	if(this->get_bfs_dis(tgt) == -1) return this->greedy_step(tgt,this->DIR_ASSESS_GO_SAFE);
+	else return this->find_path(tgt,this->DIR_ASSESS_GO_SAFE);
 }
 double Assess::GRED_ASSESS_REGULAR(int ind, bool directed, const mix_score_t& scores) {
 	double ans = scores.mixed_score;
@@ -2096,7 +2157,8 @@ int Assess::find_dead(int snkid) {
 
 		int blocking_snk = this->ctx.snake_map()[next.x][next.y];
 		if(blocking_snk != -1 && blocking_snk != snkid) return i;
-		if(blocking_snk == snkid && snake.length() >= 2 && next != snake[1]) return i;
+		if(blocking_snk == snkid && snake.length() >= 2)
+			if(next != snake[1] && (next != snake.coord_list.back() || snake.length_bank)) return i;
 	}
 	return -1;
 }

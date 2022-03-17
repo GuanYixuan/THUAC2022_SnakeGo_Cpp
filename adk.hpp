@@ -364,6 +364,10 @@ public:
 	//检查是否能进行操作actid，actid与Operation的编号统一
 	bool check_operation(int actid) const;
 
+	int get_pos_on_snake(const Coord &pos) const;
+	bool not_crushing(int actid) const;
+	bool must_die() const;
+
 	const std::vector<Snake>& my_snakes() const;
 	std::vector<Snake>& my_snakes();
 	const std::vector<int>& tmp_my_snakes() const;
@@ -546,6 +550,37 @@ bool Context::skip_operation() {//除了skip，还得帮着把尾巴收一下
 	}
 
 	return !find_next_snake() || round_preprocess();
+}
+
+int Context::get_pos_on_snake(const Coord &pos) const {
+	const int x = pos.x,y = pos.y;
+	const Snake &snk = this->find_snake(this->_snake_map[x][y]);
+	for(int i = 0; i < snk.length(); i++) if(snk[i] == pos) return snk.length()-i;
+	assert(false);
+}
+bool Context::not_crushing(int actid) const {
+	int snkid = this->_current_snake_id;
+	const Coord next = this->current_snake()[0];
+	int tx = next.x + ACT[actid][0], ty = next.y + ACT[actid][1];
+
+	if(tx < 0 || ty < 0 || tx >= 16 || ty >= 16 || this->_wall_map[tx][ty] != -1) return false;//越界/撞墙
+
+	const int blocking_snake = this->_snake_map[tx][ty];
+	if(blocking_snake == -1) return true;
+
+	//仅在self_blocking时采用override
+	const Snake& blocking_snk = this->find_snake(blocking_snake);
+	const int leave_time = this->get_pos_on_snake(Coord({tx,ty})) + blocking_snk.length_bank;
+
+	if(blocking_snake == snkid) {//self_blocking
+		if(leave_time <= 1) return true;
+		return false;
+	}
+	return false;
+}
+bool Context::must_die() const {
+	for(int i = 0; i < ACT_LEN; i++) if(this->check_operation(i+1) && this->not_crushing(i)) return false;
+	return true;
 }
 
 inline Snake& Context::current_snake()

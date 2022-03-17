@@ -454,6 +454,8 @@ class Search {
 		int max_turn;
 		int max_count = MAX_SEARCH_COUNT;
 		bool snk_simu_type[SNK_SIMU_TYPE_MAX];
+		bool stopping_snake[SNK_SIMU_TYPE_MAX];
+		int not_simu_cnt = 0;
 		double (*value_func)(const Context& begin, const Context& end, int snkid);
 
 		void search_bfs();
@@ -472,6 +474,7 @@ ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid)
 
 	for(int i = 0; i < ACT_MAXV; i++) this->results[i] = SEARCH_BEST_NULL;
 	for(int i = 0; i < SNK_SIMU_TYPE_MAX; i++) this->snk_simu_type[i] = true;//所有id都在模拟范围内（包括未来的id）
+	for(int i = 0; i < SNK_SIMU_TYPE_MAX; i++) this->stopping_snake[i] = false;
 	
 	vector<int> snk_list;
 	for(auto it = this->ctx0.my_snakes().begin(); it != this->ctx0.my_snakes().end(); it++) snk_list.push_back(it->id);
@@ -484,17 +487,27 @@ ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid)
 				break;
 			}
 		}
-		if(!keep) snk_simu_type[*it] = false;//,printf("remove:%d\n",*it);//排除id
+		if(!keep) {
+			snk_simu_type[*it] = false;//,printf("remove:%d\n",*it);//排除id
+			not_simu_cnt++;
+		}
 	}
 	// 帮ctx0跳
 	while(!this->snk_simu_type[this->ctx0._current_snake_id]) this->ctx0.skip_operation();
+
+	bool arrived = false;
+	for(const Snake& snk : this->ctx0.my_snakes()) {
+		if(snk.id == this->snkid) arrived = true;
+		if(arrived) stopping_snake[snk.id] = true;
+	}
+	for(const Snake& snk : this->ctx0.opponents_snakes()) stopping_snake[snk.id] = true;
 }
 void Search::setup_search(int max_turn, double (*value_func)(const Context& begin, const Context& end, int snkid), int act_maxv) {
 	this->act_maxv = act_maxv;
 	this->max_turn = max_turn;
 	this->value_func = value_func;
 	this->end_turn = min(this->ctx0.current_round() + this->max_turn,this->ctx0.max_round());//【最后一回合可能搜不完全】
-	// printf("setup: start_turn:%d max_turn:%d end_turn:%d\n",this->ctx0.current_round(),this->max_turn,this->end_turn);
+	printf("setup: start_turn:%d max_turn:%d end_turn:%d\n",this->ctx0.current_round(),this->max_turn,this->end_turn);
 }
 void Search::search() {
 	if(this->ctx0.current_round() >= this->ctx0.max_round()) {
@@ -528,12 +541,13 @@ void Search::search_bfs() {
 		this->search_qu.pop();
 		this->logger.flush();
 
-		assert(this->node_list[now].ctx.current_round() <= this->end_turn);
-		// if(now <= 1000) this->logger.log(0,"now at : [%d],fa:%d lst:%d curr_snk:%d max_layer:%d curr_round:%d",now,this->node_list[now].fa,this->node_list[now].last_step,this->node_list[now].ctx._current_snake_id,this->node_list[now].ctx.current_snake().camp == this->camp,this->node_list[now].ctx.current_round());
+		assert(this->node_list[now].ctx.current_round() <= this->end_turn + 1);
+		// if(this->node_list[now].ctx.current_round() == this->end_turn) this->logger.log(0,"now at : [%d],fa:%d lst:%d curr_snk:%d snk_camp:%d curr_round:%d",now,this->node_list[now].fa,this->node_list[now].last_step,this->node_list[now].ctx._current_snake_id,this->node_list[now].ctx.current_snake().camp,this->node_list[now].ctx.current_round());
 
 		//检查终止条件
 		bool end = false;
-		if(this->node_list[now].ctx.current_round() == this->end_turn && this->node_list[now].ctx._current_snake_id == this->snkid) {//到时间
+		bool time_up = (this->node_list[now].ctx.current_round() == this->end_turn && this->stopping_snake[this->node_list[now].ctx._current_snake_id]) || this->node_list[now].ctx.current_round() > this->end_turn;
+		if(time_up) {//到时间
 			if(end_turn >= this->ctx0.current_round()+this->MAX_SEARCH_DEPTH || end_turn >= this->ctx0.max_round()) end = true;
 			else if(this->search_cnt >= BASE_SEARCH_COUNT) end = true;
 			else {
@@ -544,7 +558,7 @@ void Search::search_bfs() {
 			}
 			// end = true;
 		}
-		if(!this->node_list[now].ctx.inlist(this->snkid)) end = true;//蛇死
+		if(this->node_list[now].ctx.my_snakes().size() + this->node_list[now].ctx.opponents_snakes().size() == not_simu_cnt) end = true;//蛇全死
 		if(this->search_cnt >= this->max_count) end = true;//局面超限
 		//剪枝(尚未确认)
 		int fa = this->node_list[now].fa;
@@ -560,10 +574,18 @@ void Search::search_bfs() {
 		}
 
 		//开始扩展
-		// this->logger.log(0,"pre_extend");
-		// this->logger.flush();
+		bool crushed = false;
+		bool must_die = this->node_list[now].ctx.must_die();
 		for(int i = 0; i < this->act_maxv; i++) {
 			if(!this->node_list[now].ctx.check_operation(i+1)) continue;
+			if(!must_die && i < ACT_LEN && !this->node_list[now].ctx.not_crushing(i)) continue;
+			if(must_die && i < ACT_LEN) {
+				const Coord next = this->node_list[now].ctx.current_snake()[0] + ACT_CRD[i];
+				if(this->node_list[now].ctx.snake_map()[next.x][next.y] != this->node_list[now].ctx._current_snake_id) {
+					if(!crushed) crushed = true;
+					else continue;
+				}
+			}
 
 			//先初始化ctx
 			// this->logger.log(0,"push:[%d]->[%d] last:%d",now,this->node_list.size(),i);
@@ -571,15 +593,15 @@ void Search::search_bfs() {
 			this->node_list[now].childs++;
 			this->node_list.back().ctx.do_operation(Operation({i+1}));
 			
-			//如果撞死了,直接返回
-			if(!this->node_list.back().ctx.inlist(this->snkid)) {
+			//如果全撞死了,直接返回
+			if(this->node_list.back().ctx.my_snakes().size() + this->node_list.back().ctx.opponents_snakes().size() <= not_simu_cnt) {//但为啥会小于呢...
 				const double score = (*this->value_func)(this->ctx0,this->node_list.back().ctx,this->snkid);
 				this->node_list.back().best = search_best({true,i,score});
 				this->update_value(this->node_list.back().best,now,this->node_list.size()-1);
 				continue;
 			}
 
-			while(!this->snk_simu_type[this->node_list.back().ctx._current_snake_id] && this->node_list.back().ctx.inlist(this->snkid)) this->node_list.back().ctx.skip_operation();
+			while(!this->snk_simu_type[this->node_list.back().ctx._current_snake_id]) this->node_list.back().ctx.skip_operation();
 			if(this->node_list.back().ctx.current_snake().camp == this->camp) this->node_list.back().max_layer = true;
 
 
@@ -589,9 +611,6 @@ void Search::search_bfs() {
 		this->node_list[now].full_expended = true;
 		if(this->node_list[now].returned == this->node_list[now].childs && this->node_list[now].fa != -1)
 			this->update_value(search_best({this->node_list[now].ctx.inlist(this->snkid),this->node_list[now].last_step,this->node_list[now].best.val}),this->node_list[now].fa,now);
-		// this->logger.log(0,"post_extend");
-		// this->logger.flush();
-
 	}
 }
 void Search::update_value(const search_best& best, int fa, int src) {

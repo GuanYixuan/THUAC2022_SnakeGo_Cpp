@@ -2,6 +2,7 @@
 #include <cstdarg>
 #include <iostream>
 #include <map>
+#include <ctime>
 #include "adk.hpp"
 using namespace std;
 
@@ -104,6 +105,7 @@ class AI {
 	public:
 		AI(Logger &logger);
 		Logger &logger;
+		clock_t turn_start;
 		int judge(const Snake &snake, const Context &ctx);
 		
 		//key是snkid，val是此蛇当前的目标
@@ -165,7 +167,8 @@ class AI {
 		int item_alloc[ALLOC_MAX];
 
 		//随缘任务
-		bool try_split();
+		bool try_split_early();
+		bool try_split_late();
 		bool try_shoot();
 		int try_solid();
 
@@ -430,7 +433,7 @@ struct search_node {
 };
 class Search {
 	public:
-		Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid);
+		Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid, clock_t turn_start);
 
 		void setup_search(int max_turn, double (*value_func)(const Context& begin, const Context& end, int snkid), int act_maxv = 4);
 		//发起局部搜索
@@ -448,6 +451,8 @@ class Search {
 	private:
 		Logger& logger;
 		Context ctx0;
+		clock_t turn_start;
+
 		const int camp;
 		const int snkid;
 		int act_maxv;
@@ -461,13 +466,13 @@ class Search {
 		void search_bfs();
 		void update_value(const search_best& best, int fa, int src);
 
-		
+		const static int STOP_TIME = 0.9 * CLOCKS_PER_SEC;
 		const static int MAX_SEARCH_COUNT = 20000;
 		const static int BASE_SEARCH_COUNT = 1000;
 		const static int MAX_SEARCH_DEPTH = 7;
 };
-Search::Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid) :
-ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid)
+Search::Search(const Context& ctx0, Logger& logger, const vector<int>& snklst, int snkid, clock_t turn_start) :
+ctx0(ctx0), logger(logger), camp(ctx0.current_player()), snkid(snkid), turn_start(turn_start)
 {
 	this->node_list.clear();
 	while(!this->search_qu.empty()) this->search_qu.pop();
@@ -506,11 +511,11 @@ void Search::setup_search(int max_turn, double (*value_func)(const Context& begi
 	this->act_maxv = act_maxv;
 	this->max_turn = max_turn;
 	this->value_func = value_func;
-	this->end_turn = min(this->ctx0.current_round() + this->max_turn,this->ctx0.max_round());//【最后一回合可能搜不完全】
-	printf("setup: start_turn:%d max_turn:%d end_turn:%d\n",this->ctx0.current_round(),this->max_turn,this->end_turn);
+	this->end_turn = min(this->ctx0.current_round() + this->max_turn,this->ctx0.max_round() - 1);//【最后一回合可能搜不完全】
+	this->logger.log(0,"search_setup: start_turn:%d max_turn:%d end_turn:%d",this->ctx0.current_round(),this->max_turn,this->end_turn);
 }
 void Search::search() {
-	if(this->ctx0.current_round() >= this->ctx0.max_round()) {
+	if(this->ctx0.current_round() >= this->ctx0.max_round() - 1) {
 		for(int i = 0; i < ACT_MAXV; i++) this->results[i].val = 0;
 		this->snk_dead = false;
 		return;
@@ -530,6 +535,7 @@ void Search::search() {
 	for(int i = 0; i < this->act_maxv; i++) if(this->results[i].isnull()) this->results[i].val = -100;
 
 	this->logger.log(0,"searched:%d",this->search_cnt);
+	if(clock() - this->turn_start > this->STOP_TIME) this->logger.log(1,"即将超时，停止搜索");
 	if(this->search_cnt >= this->MAX_SEARCH_COUNT) this->logger.log(1,"局面数超出搜索限制");
 }
 void Search::search_bfs() {
@@ -547,8 +553,9 @@ void Search::search_bfs() {
 		//检查终止条件
 		bool end = false;
 		bool time_up = (this->node_list[now].ctx.current_round() == this->end_turn && this->stopping_snake[this->node_list[now].ctx._current_snake_id]) || this->node_list[now].ctx.current_round() > this->end_turn;
+		time_up = time_up || (clock() - this->turn_start > this->STOP_TIME);
 		if(time_up) {//到时间
-			if(end_turn >= this->ctx0.current_round()+this->MAX_SEARCH_DEPTH || end_turn >= this->ctx0.max_round()) end = true;
+			if(end_turn >= this->ctx0.current_round()+this->MAX_SEARCH_DEPTH || end_turn >= this->ctx0.max_round() - 1) end = true;
 			else if(this->search_cnt >= BASE_SEARCH_COUNT) end = true;
 			else {
 				this->max_count = BASE_SEARCH_COUNT;
@@ -594,7 +601,7 @@ void Search::search_bfs() {
 			this->node_list.back().ctx.do_operation(Operation({i+1}));
 			
 			//如果全撞死了,直接返回
-			if(this->node_list.back().ctx.my_snakes().size() + this->node_list.back().ctx.opponents_snakes().size() <= not_simu_cnt) {//但为啥会小于呢...
+			if(this->node_list.back().ctx.my_snakes().size() + this->node_list.back().ctx.opponents_snakes().size() <= this->not_simu_cnt) {//但为啥会小于呢...
 				const double score = (*this->value_func)(this->ctx0,this->node_list.back().ctx,this->snkid);
 				this->node_list.back().best = search_best({true,i,score});
 				this->update_value(this->node_list.back().best,now,this->node_list.size()-1);
@@ -603,7 +610,6 @@ void Search::search_bfs() {
 
 			while(!this->snk_simu_type[this->node_list.back().ctx._current_snake_id]) this->node_list.back().ctx.skip_operation();
 			if(this->node_list.back().ctx.current_snake().camp == this->camp) this->node_list.back().max_layer = true;
-
 
 			this->search_cnt++;
 			this->search_qu.push(this->node_list.size()-1);
@@ -636,6 +642,7 @@ logger(logger)
 	
 }
 int AI::judge(const Snake &snake, const Context &ctx) {
+	this->turn_start = clock();
 	this->snake = &snake;
 	this->ctx = &ctx;
 	this->turn = ctx.current_round();
@@ -663,6 +670,8 @@ int AI::judge(const Snake &snake, const Context &ctx) {
 	const int sol = this->try_solid();
 	if(sol != -1) return sol+1;
 
+	if(this->try_split_early()) return 6;
+
 	if(tgt_type == 0) return this->do_eat()+1;
 	if(tgt_type == 1) return this->do_kl()+1;
 	if(tgt_type == 2) return this->do_shoot()+1;
@@ -671,7 +680,7 @@ int AI::judge(const Snake &snake, const Context &ctx) {
 	if(tgt_type == -1) {
 		this->logger.log(1,"未分配到目标");
 
-		if(this->try_split()) {
+		if(this->try_split_late()) {
 			this->logger.log(1,"主动分裂，长度%d",this->snake->length());
 			return 6;
 		}
@@ -1253,7 +1262,21 @@ void AI::distribute_tgt() {
 		solid_cnt++;
 	}
 }
-bool AI::try_split() {
+bool AI::try_split_early() {
+	if(!this->assess->can_split()) return false;
+	if(this->target_list[this->snake->id].type == 0) {
+		if(this->turn > 100 || this->ctx->my_snakes().size() >= 3) return false;
+
+		const Item& tgt = this->ctx->find_item(this->item_addons[this->snake->id]);
+		const int en_spd = this->assess->enemy_spd[tgt.x][tgt.y].dist;
+		if(en_spd == -1 || en_spd > this->assess->get_bfs_dis(Coord({tgt.x,tgt.y}),this->snake->id)) {
+			this->logger.log(1,"主动分裂(高优先级)");
+			return true;
+		}
+	}
+	return false;
+}
+bool AI::try_split_late() {
 	const Coord& tail = this->snake->coord_list.back();
 	if(!this->assess->can_split() || this->assess->calc_snk_air(tail) < 2 || this->ctx->my_snakes().size() + this->reserved_size == 4) return false;
 
@@ -1636,7 +1659,7 @@ void Assess::mixed_search() {
 		if(dst != -1 && dst <= this->MIXED_SEARCH_SNK_DIS_THRESH[0]-1) snk_list.push_back(it->id);
 	}
 	this->logger.log(0,"搜索范围内有%d条蛇,初始深度为%d",snk_list.size(),MIXED_SEARCH_DEPTH[snk_list.size()]);
-	Search search(this->ctx,this->logger,snk_list,this->snkid);
+	Search search(this->ctx,this->logger,snk_list,this->snkid,this->ai.turn_start);
 
 	int depth = MIXED_SEARCH_DEPTH[snk_list.size()];
 	if(this->ai.target_list[this->snkid].type == 1) search.setup_search(depth,this->attack_val_func,5);

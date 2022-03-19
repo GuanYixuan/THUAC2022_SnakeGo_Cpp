@@ -66,7 +66,7 @@ adk维护过程
 cd "D:\Special Project\Snake\ai\ai_cpp\build"
 cd "D:\Special Project\Snake\ai\old_vers\Not Loaded"
 main.exe 127.0.0.1 54321
-cpp_22030901.exe 127.0.0.1 54321
+cpp_22031801.exe 127.0.0.1 54321
 
 judger_cli --port 54321 --playerCount 2  --logicPath "D:\Special Project\Snake\local-judger\main.exe" --output "D:\Special Project\Snake\local-judger\temp"
 

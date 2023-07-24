@@ -260,8 +260,8 @@ const static int SNAKE_LIMIT = 4;
 
 struct Item
 {
-	int x, y, id, time, type, param;
-	bool eaten, expired;
+	int x, y, id, time, type, param, eaten;
+	bool expired;
 
 	inline bool operator==(const Item &b) const { return this->id == b.id; }
 	inline bool operator!=(const Item &b) const { return this->id != b.id; }
@@ -634,7 +634,7 @@ inline bool Context::move_snake( const Operation& op )
 		if ( _item_map[nx][ny] != -1 )
 		{
 			Item& item = find_item( _item_map[nx][ny] );
-			item.eaten = true;
+			item.eaten = snake.id;
 			if ( item.type == 0 ) snake.length_bank += item.param;
 			else if ( item.type == 2 ) snake.railgun_item = item;
 			else return false;
@@ -888,7 +888,7 @@ inline bool Context::round_preprocess()
 				}
 				else
 				{
-					item.eaten = true;
+					item.eaten = snake_id;
 					if ( item.type == 0 )
 					{
 						find_snake( snake_id ).length_bank += item.param;
@@ -1060,7 +1060,7 @@ inline std::vector<Item> SnakeGoAI::read_item_list()
 		item.type = buf[7 * i + 2];
 		item.time = BIG_ENDIAN_INT( buf[7 * i + 3], buf[7 * i + 4] );
 		item.param = BIG_ENDIAN_INT( buf[7 * i + 5], buf[7 * i + 6] );
-		item.eaten = false;
+		item.eaten = -1;
 		item.expired = false;
 	}
 
